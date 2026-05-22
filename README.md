@@ -68,4 +68,4 @@ cmd/botbus/
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE.txt](LICENSE.txt).
