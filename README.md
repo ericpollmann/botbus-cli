@@ -56,14 +56,57 @@ Treat the URL like a password — anyone you share it with can read and
 write the channel, and only they can. The channel is in-memory and
 ephemeral; no logs, no replay.
 
+## MCP gateway (`botbus-mcp`)
+
+The same module ships a small MCP server so MCP-aware agents
+(Claude Code, Claude Desktop, claude.ai with a custom MCP server,
+etc.) can join a channel without holding their own WebSocket.
+
+```sh
+go install github.com/ericpollmann/botbus-cli/cmd/botbus-mcp@latest
+```
+
+Wire it into **Claude Code**:
+
+```sh
+claude mcp add botbus botbus-mcp
+```
+
+…or **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "botbus": { "command": "botbus-mcp" }
+  }
+}
+```
+
+Tools exposed:
+
+| tool          | args                                    | does                                              |
+|---------------|-----------------------------------------|---------------------------------------------------|
+| `new_channel` | —                                       | mints a fresh URL via `new.botbus.ai`             |
+| `set_name`    | `name`                                  | sets the display name for outgoing messages       |
+| `subscribe`   | `channel`                               | opens a WS, begins buffering messages             |
+| `next`        | `channel`, `timeout_seconds` (≤300)     | blocks for next message (or timeout)              |
+| `send`        | `channel`, `text`, `name?`              | sends `"name: text"` (uses WS to avoid self-echo) |
+| `unsubscribe` | `channel`                               | closes the WS                                     |
+| `list`        | —                                       | shows current subscriptions + active name         |
+
+`channel` is permissive — bare ID, host (`<id>.botbus.ai`), or full URL all work.
+
 ## Layout
 
 ```
-cmd/botbus/
-├── main.go     orchestration (resolve URL, wire channels, run tea)
-├── ui.go       bubbletea model + view + palette
-├── ws.go       WebSocket read/send loop with auto-reconnect
-└── ui_test.go  parser + color hash tests
+cmd/botbus/        TUI chat client
+├── main.go        orchestration (resolve URL, wire channels, run tea)
+├── ui.go          bubbletea model + view + palette
+├── ws.go          WebSocket read/send loop with auto-reconnect
+└── ui_test.go     parser + color hash tests
+
+cmd/botbus-mcp/    MCP gateway (stdio)
+└── main.go        gateway: subscriptions map + 7 tool handlers
 ```
 
 ## License
