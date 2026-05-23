@@ -47,6 +47,10 @@ func runWS(ctx context.Context, target string, recv chan<- []byte, send <-chan [
 				if err != nil {
 					return
 				}
+				// Drop typed (non-text) frames — audio etc. The CLI is text-only.
+				if isTypedFrame(m) {
+					continue
+				}
 				select {
 				case recv <- m:
 				case <-ctx.Done():

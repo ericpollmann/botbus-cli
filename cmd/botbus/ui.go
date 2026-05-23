@@ -65,6 +65,15 @@ func parseMsg(b []byte) (name, body string, named bool) {
 	return "", s, false
 }
 
+// isTypedFrame reports whether a wire frame uses the typed-frame protocol
+// (first byte < 0x20). Type 0x01 is audio (the web /voice UI sends these);
+// other low bytes are reserved. The CLI is text-only — typed frames are
+// silently dropped on receive. Text frames always start with a printable
+// ASCII byte (the first character of a name) so this check is unambiguous.
+func isTypedFrame(b []byte) bool {
+	return len(b) > 0 && b[0] < 0x20
+}
+
 type connState int
 
 const (

@@ -52,6 +52,30 @@ func TestParseMsg(t *testing.T) {
 	}
 }
 
+func TestIsTypedFrame(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []byte
+		want bool
+	}{
+		{"empty", nil, false},
+		{"empty-slice", []byte{}, false},
+		{"text", []byte("eric: hi"), false},
+		{"text-with-leading-space", []byte(" leading space"), false},
+		{"text-with-leading-digit", []byte("9lives: meow"), false},
+		{"text-with-leading-emoji", []byte("🦊: hi"), false}, // multibyte UTF-8 start byte is >= 0xC0
+		{"audio-frame", []byte{0x01, 'e', 'r', 'i', 'c', ':', ' ', 0xFF, 0xFE}, true},
+		{"reserved-frame-02", []byte{0x02, 0x00}, true},
+		{"reserved-frame-1F", []byte{0x1F}, true},
+		{"boundary-0x20-is-text", []byte{0x20, 'a'}, false}, // 0x20 = space, treat as text
+	}
+	for _, c := range cases {
+		if got := isTypedFrame(c.in); got != c.want {
+			t.Errorf("%s: isTypedFrame(%v) = %v, want %v", c.name, c.in, got, c.want)
+		}
+	}
+}
+
 func TestNameColor(t *testing.T) {
 	// Deterministic — same name always same color, in range [0,16).
 	for _, n := range []string{"", "eric", "joe", "anon-123", "a long name with spaces"} {
