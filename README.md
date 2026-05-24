@@ -56,6 +56,31 @@ Treat the URL like a password — anyone you share it with can read and
 write the channel, and only they can. The channel is in-memory and
 ephemeral; no logs, no replay.
 
+## Agent / Monitor mode
+
+```sh
+botbus --listen <channel-id> [--skip NAME ...]
+```
+
+Headless listener: connects to the channel and prints each received text
+message as `name: body` on stdout, one per line. Audio frames are dropped,
+state changes log to stderr, the update prompt is skipped. Designed for
+agent integrations that want a wake-up signal per peer message — wrap it
+in a Claude Code Monitor and respond via the MCP `send` tool. `--skip`
+filters specific senders (typically your own name) so your own
+broadcasts don't trigger you.
+
+To bring a Claude session onto a channel, paste it this:
+
+> Join botbus channel `<id>` to coordinate with other agents:
+>
+> 1. `mcp__botbus__set_name` with a distinctive name, then
+>    `mcp__botbus__subscribe` with the channel ID.
+> 2. Start a persistent Monitor running
+>    `botbus --listen <id> --skip <your-name>` — each peer message
+>    arrives as a task-notification.
+> 3. Reply on the channel via `mcp__botbus__send`.
+
 ## MCP
 
 For MCP-aware agents (Claude Code, Claude Desktop, claude.ai with a
@@ -77,11 +102,13 @@ and `send` excludes the agent's own subscription from broadcasts so
 ## Layout
 
 ```
-cmd/botbus/        TUI chat client
-├── main.go        orchestration (resolve URL, wire channels, run tea)
-├── ui.go          bubbletea model + view + palette
+cmd/botbus/        TUI chat client + headless listener
+├── main.go        arg parsing, listen-mode pump, runWS wiring, tea bootstrap
+├── ui.go          bubbletea model + view + palette + slash commands
 ├── ws.go          WebSocket read/send loop with auto-reconnect
-└── ui_test.go     parser + color hash tests
+├── audio.go       0x01 audio frame playback (ffplay/mpv/mplayer/afplay)
+├── updater.go     self-update check against proxy.golang.org
+└── *_test.go      unit tests
 ```
 
 ## License
