@@ -24,17 +24,31 @@ import (
 // to avoid blocking the WS reader, just without sound.
 var playerCmd []string
 
+// playerHint is a one-line message printed to stderr before the TUI
+// starts if the only available player is afplay (which doesn't decode
+// the webm/opus that Chrome and Firefox MediaRecorder produce). Empty
+// when a webm-capable player was found or none at all.
+var playerHint string
+
 func init() {
-	// Preference order: macOS native first, then ffmpeg's ffplay, then mpv,
-	// then mplayer. All four accept a filename as the last positional arg.
+	// Preference order matters: web clients on Chrome/Firefox send
+	// audio/webm (Opus), which afplay can't decode — CoreAudio's
+	// AudioFile decoders don't include the webm container. ffplay, mpv,
+	// and mplayer all handle webm natively, so they go first. afplay
+	// stays as a last-ditch fallback for Safari users sending audio/mp4
+	// (which afplay DOES decode).
 	for _, candidate := range [][]string{
-		{"afplay"},
 		{"ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet"},
 		{"mpv", "--no-video", "--really-quiet"},
 		{"mplayer", "-really-quiet"},
+		{"afplay"},
 	} {
 		if _, err := exec.LookPath(candidate[0]); err == nil {
 			playerCmd = candidate
+			if candidate[0] == "afplay" {
+				playerHint = "note: only afplay available — webm/opus voice messages won't play.\n" +
+					"      install ffmpeg (`brew install ffmpeg`) or mpv for reliable playback.\n"
+			}
 			return
 		}
 	}

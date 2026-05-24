@@ -50,6 +50,36 @@ func TestPseudoVersionDate(t *testing.T) {
 	}
 }
 
+func TestIsStrictlyNewer(t *testing.T) {
+	cases := []struct {
+		desc       string
+		latest     string
+		cur        string
+		wantNewer  bool
+	}{
+		{"latest newer than cur",
+			"v0.0.0-20260524003103-aaa", "v0.0.0-20260524001745-bbb", true},
+		{"latest older than cur (proxy lag — the bug scenario)",
+			"v0.0.0-20260524001745-bbb", "v0.0.0-20260524003103-aaa", false},
+		{"identical timestamps (no re-install loop)",
+			"v0.0.0-20260524003103-aaa", "v0.0.0-20260524003103-aaa", false},
+		{"identical date, different hash, same time — no offer",
+			"v0.0.0-20260524003103-aaa", "v0.0.0-20260524003103-bbb", false},
+		{"unparseable latest — conservative no-prompt",
+			"v1.2.3", "v0.0.0-20260524003103-aaa", false},
+		{"unparseable cur — conservative no-prompt",
+			"v0.0.0-20260524003103-aaa", "v1.2.3", false},
+		{"both unparseable — no prompt",
+			"v1.2.3", "v1.2.4", false},
+	}
+	for _, c := range cases {
+		if got := isStrictlyNewer(c.latest, c.cur); got != c.wantNewer {
+			t.Errorf("%s: isStrictlyNewer(%q, %q) = %v, want %v",
+				c.desc, c.latest, c.cur, got, c.wantNewer)
+		}
+	}
+}
+
 func TestLatestVersion(t *testing.T) {
 	// Mock the proxy with httptest.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

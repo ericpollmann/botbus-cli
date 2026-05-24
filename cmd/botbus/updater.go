@@ -87,25 +87,47 @@ func latestVersion(ctx context.Context) (string, error) {
 	return parseProxyLatest(body)
 }
 
-// pseudoVersionDate extracts the date portion of a Go pseudo-version like
-// "v0.0.0-20260523120000-abcdef123456" → "2026-05-23 12:00 UTC". Returns
-// the original string unchanged if it doesn't match the expected shape.
-// Used purely for readable display in the update prompt; the comparison
-// itself is exact-string-match.
-func pseudoVersionDate(v string) string {
+// pseudoVersionTime extracts the embedded UTC timestamp from a Go
+// pseudo-version like "v0.0.0-20260523120000-abcdef123456". Returns
+// (zero, false) for tagged releases and anything else that doesn't match
+// the expected shape — those cases should fall back to exact-match
+// equality in the caller.
+func pseudoVersionTime(v string) (time.Time, bool) {
 	parts := strings.Split(v, "-")
 	if len(parts) < 3 {
-		return v
+		return time.Time{}, false
 	}
 	ts := parts[1]
 	if len(ts) != 14 {
-		return v
+		return time.Time{}, false
 	}
 	t, err := time.Parse("20060102150405", ts)
 	if err != nil {
-		return v
+		return time.Time{}, false
 	}
-	return t.UTC().Format("2006-01-02 15:04 UTC")
+	return t.UTC(), true
+}
+
+// pseudoVersionDate returns a human-readable formatting of the embedded
+// timestamp, or the original string if it doesn't carry one.
+func pseudoVersionDate(v string) string {
+	if t, ok := pseudoVersionTime(v); ok {
+		return t.Format("2006-01-02 15:04 UTC")
+	}
+	return v
+}
+
+// isStrictlyNewer reports whether `latest` is a more recent build than
+// `cur`. Both should be Go pseudo-versions (v0.0.0-YYYYMMDDHHMMSS-hash);
+// if either lacks a parseable timestamp we conservatively return false
+// (no prompt) so we never offer a downgrade or a same-build re-install.
+func isStrictlyNewer(latest, cur string) bool {
+	lt, lok := pseudoVersionTime(latest)
+	ct, cok := pseudoVersionTime(cur)
+	if !lok || !cok {
+		return false
+	}
+	return lt.After(ct)
 }
 
 // checkUpdateInteractive runs the full update check + prompt + install flow.
@@ -123,7 +145,14 @@ func checkUpdateInteractive() {
 	ctx, cancel := context.WithTimeout(context.Background(), proxyTimeout)
 	defer cancel()
 	latest, err := latestVersion(ctx)
-	if err != nil || latest == "" || latest == cur {
+	if err != nil || latest == "" {
+		return
+	}
+	// Only prompt when the proxy reports a strictly newer build than
+	// what's running. The proxy's @latest endpoint can lag behind a
+	// recent `go install @latest` (CDN caching, fresh commits not yet
+	// indexed) and would otherwise put us in an offer-downgrade loop.
+	if !isStrictlyNewer(latest, cur) {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "Update available: %s → %s.\nInstall now? [Y/n] ",

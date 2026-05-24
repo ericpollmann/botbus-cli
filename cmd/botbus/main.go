@@ -99,6 +99,12 @@ func main() {
 	// on devel builds, missing network, or BOTBUS_NO_UPDATE_CHECK=1.
 	checkUpdateInteractive()
 
+	// One-line stderr hint if the detected audio player can't decode the
+	// webm/opus that most browsers' MediaRecorder produces.
+	if playerHint != "" {
+		fmt.Fprint(os.Stderr, playerHint)
+	}
+
 	u, err := resolveURL(arg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "resolve:", err)
