@@ -6,7 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -19,9 +20,10 @@ import (
 // Palette MUST match web/channel.html. nameColor MUST match the JS impl
 // in channel.html (sum of codepoints, mod 16).
 const (
-	dotTTL    = 5 * time.Minute
-	spinSpeed = 150 * time.Millisecond
-	quitHint  = "Esc to quit"
+	dotTTL       = 5 * time.Minute
+	spinSpeed    = 150 * time.Millisecond
+	quitHint     = "Esc to quit · /me · /dm name"
+	maxInputRows = 8
 )
 
 var palette = []string{
@@ -65,6 +67,24 @@ func parseMsg(b []byte) (name, body string, named bool) {
 	return "", s, false
 }
 
+// renderSlash returns the styled string for /me and /dm slash commands, or
+// ("", false) if body isn't a recognized slash command. Both commands render
+// in italic in the speaker's color. /dm is a convention only — the channel
+// is fundamentally public; the TARGET is encoded in the body prefix and the
+// receiving line just labels who it was directed at.
+func renderSlash(name, body string, color int) (string, bool) {
+	if action, ok := strings.CutPrefix(body, "/me "); ok {
+		return paletteStyle(color).Italic(true).Render("* " + name + " " + action), true
+	}
+	if rest, ok := strings.CutPrefix(body, "/dm "); ok {
+		if sp := strings.Index(rest, " "); sp > 0 {
+			target, dmText := rest[:sp], rest[sp+1:]
+			return paletteStyle(color).Italic(true).Render(name + " → " + target + ": " + dmText), true
+		}
+	}
+	return "", false
+}
+
 // isTypedFrame reports whether a wire frame uses the typed-frame protocol
 // (first byte < 0x20). Type 0x01 is audio (the web /voice UI sends these);
 // other low bytes are reserved. The CLI is text-only — typed frames are
@@ -96,7 +116,7 @@ type model struct {
 	spinIdx    int
 	msgs       []string
 	seenColors map[int]time.Time // palette idx → lastSeen
-	input      textinput.Model
+	input      textarea.Model
 	recv       <-chan []byte
 	states     <-chan connState
 	send       chan<- []byte
@@ -104,17 +124,50 @@ type model struct {
 }
 
 func newModel(host, myName string, recv <-chan []byte, states <-chan connState, send chan<- []byte) model {
-	ti := textinput.New()
-	ti.Placeholder = "type and Enter · this URL is the secret"
-	// Prompt shows the user's own name in their color, with a trailing ": "
-	// — matches what others will see when receiving the message.
-	ti.Prompt = paletteStyle(nameColor(myName)).Render(myName+":") + " "
-	ti.Focus()
+	// SetPromptFunc renders the user's own colored name on line 0 and an
+	// equal-width blank indent on subsequent lines so multi-line input
+	// aligns nicely under the first line of text.
+	namePrompt := paletteStyle(nameColor(myName)).Render(myName+":") + " "
+	indent := strings.Repeat(" ", lipgloss.Width(namePrompt))
+	promptWidth := lipgloss.Width(namePrompt)
+
+	ta := textarea.New()
+	ta.Placeholder = "type and Enter · shift+enter newline · /me · /dm name"
+	ta.ShowLineNumbers = false
+	ta.CharLimit = 0
+	ta.SetHeight(1)
+	ta.SetWidth(80)
+	// Default InsertNewline is bound to Enter; we want Enter to SEND and
+	// only Shift+Enter / Alt+Enter / Ctrl+J to insert a newline. Most
+	// terminals don't distinguish Shift+Enter from Enter unless they
+	// support kitty / CSI u — Alt+Enter and Ctrl+J are reliable fallbacks.
+	ta.KeyMap.InsertNewline = key.NewBinding(
+		key.WithKeys("shift+enter", "alt+enter", "ctrl+j"),
+	)
+	ta.SetPromptFunc(promptWidth, func(line int) string {
+		if line == 0 {
+			return namePrompt
+		}
+		return indent
+	})
+	ta.Focus()
 	return model{
-		host: host, myName: myName, state: stConnecting, input: ti,
+		host: host, myName: myName, state: stConnecting, input: ta,
 		recv: recv, states: states, send: send,
 		seenColors: map[int]time.Time{},
 	}
+}
+
+// appendSpoken renders an incoming or outgoing line into the scrollback,
+// dispatching /me and /dm to renderSlash. color is the speaker's palette
+// index; raw is the full "name: body" string used as the plain fallback.
+func (m *model) appendSpoken(name, body, raw string) {
+	color := nameColor(name)
+	if rendered, ok := renderSlash(name, body, color); ok {
+		m.msgs = append(m.msgs, rendered)
+		return
+	}
+	m.msgs = append(m.msgs, paletteStyle(color).Render(raw))
 }
 
 func waitRecv(c <-chan []byte) tea.Cmd {
@@ -154,33 +207,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
-		m.input.Width = msg.Width - len(quitHint) - 4
-		if m.input.Width < 8 {
-			m.input.Width = 8
+		w := msg.Width - lipgloss.Width(quitHint) - 4
+		if w < 8 {
+			w = 8
 		}
+		m.input.SetWidth(w)
 		return m, nil
 	case tea.KeyMsg:
-		switch msg.Type {
-		case tea.KeyEsc, tea.KeyCtrlC:
+		switch msg.String() {
+		case "esc", "ctrl+c":
 			return m, tea.Quit
-		case tea.KeyEnter:
+		case "enter":
 			text := strings.TrimSpace(m.input.Value())
 			if text == "" {
 				return m, nil
 			}
-			m.input.SetValue("")
-			// Show our own line exactly as peers will see it.
-			full := m.myName + ": " + text
-			m.msgs = append(m.msgs, paletteStyle(nameColor(m.myName)).Render(full))
+			m.input.Reset()
+			m.input.SetHeight(1)
+			// Show our own line locally exactly as peers will see it
+			// (slash-aware rendering).
+			m.appendSpoken(m.myName, text, m.myName+": "+text)
 			return m, m.publish(text)
 		}
 	case incoming:
-		name, _, named := parseMsg(msg)
+		name, body, named := parseMsg(msg)
 		text := string(msg)
 		if named {
-			color := nameColor(name)
-			m.seenColors[color] = time.Now()
-			m.msgs = append(m.msgs, paletteStyle(color).Render(text))
+			m.seenColors[nameColor(name)] = time.Now()
+			m.appendSpoken(name, body, text)
 		} else {
 			m.msgs = append(m.msgs, text)
 		}
@@ -197,6 +251,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	// Auto-resize input to fit content, capped at maxInputRows.
+	h := m.input.LineCount()
+	if h < 1 {
+		h = 1
+	}
+	if h > maxInputRows {
+		h = maxInputRows
+	}
+	m.input.SetHeight(h)
 	return m, cmd
 }
 
@@ -251,8 +314,10 @@ func (m model) View() string {
 	b.WriteString(barStyle.Render(left + strings.Repeat(" ", pad) + right))
 	b.WriteByte('\n')
 
-	// Bottom-up: pad blank lines before messages so newest sits at the input.
-	maxLines := h - 3
+	// Multi-line input grows from the bottom up; reserve rows accordingly.
+	inputView := m.input.View()
+	inputLines := strings.Count(inputView, "\n") + 1
+	maxLines := h - 1 - inputLines - 1 // -1 bar, -inputLines, -1 spacer
 	if maxLines < 1 {
 		maxLines = 1
 	}
@@ -269,12 +334,17 @@ func (m model) View() string {
 		b.WriteByte('\n')
 	}
 
-	inputView := m.input.View()
+	// Hint sits on the first line of the input, to the right.
+	lines := strings.Split(inputView, "\n")
 	hint := hintStyle.Render(quitHint)
-	ipad := w - lipgloss.Width(inputView) - lipgloss.Width(hint)
+	ipad := w - lipgloss.Width(lines[0]) - lipgloss.Width(hint)
 	if ipad < 1 {
 		ipad = 1
 	}
-	b.WriteString(inputView + strings.Repeat(" ", ipad) + hint)
+	b.WriteString(lines[0] + strings.Repeat(" ", ipad) + hint)
+	for _, line := range lines[1:] {
+		b.WriteByte('\n')
+		b.WriteString(line)
+	}
 	return b.String()
 }

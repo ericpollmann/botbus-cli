@@ -76,6 +76,62 @@ func TestIsTypedFrame(t *testing.T) {
 	}
 }
 
+func TestRenderSlash(t *testing.T) {
+	// Exact rendered output depends on lipgloss color codes which vary by
+	// terminal profile in tests. Strip ANSI and look for the textual content.
+	strip := func(s string) string {
+		// Remove escape sequences with a simple state machine.
+		var out []byte
+		inEsc := false
+		for i := 0; i < len(s); i++ {
+			c := s[i]
+			if !inEsc && c == 0x1b {
+				inEsc = true
+				continue
+			}
+			if inEsc {
+				if c == 'm' {
+					inEsc = false
+				}
+				continue
+			}
+			out = append(out, c)
+		}
+		return string(out)
+	}
+	cases := []struct {
+		name string
+		body string
+		want string // empty = expected ok=false
+	}{
+		{"eric", "/me nods", "* eric nods"},
+		{"eric", "/me nods head vigorously", "* eric nods head vigorously"},
+		{"eric", "/dm alice hello there", "eric → alice: hello there"},
+		{"eric", "/dm alice", ""},     // no space after target
+		{"eric", "/me", ""},           // no space after /me
+		{"eric", "hello world", ""},   // plain text
+		{"eric", "", ""},              // empty body
+		{"eric", "/dme nope", ""},     // not /dm with space
+		{"eric", "/dm  doubleblank", ""}, // empty target rejected (sp at index 0, sp > 0 false)
+	}
+	for _, c := range cases {
+		got, ok := renderSlash(c.name, c.body, nameColor(c.name))
+		if c.want == "" {
+			if ok {
+				t.Errorf("renderSlash(%q,%q): expected fallthrough, got %q", c.name, c.body, strip(got))
+			}
+			continue
+		}
+		if !ok {
+			t.Errorf("renderSlash(%q,%q): expected slash render, got ok=false", c.name, c.body)
+			continue
+		}
+		if g := strip(got); g != c.want {
+			t.Errorf("renderSlash(%q,%q) = %q, want %q", c.name, c.body, g, c.want)
+		}
+	}
+}
+
 func TestNameColor(t *testing.T) {
 	// Deterministic — same name always same color, in range [0,16).
 	for _, n := range []string{"", "eric", "joe", "anon-123", "a long name with spaces"} {
