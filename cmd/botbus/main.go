@@ -5,17 +5,19 @@
 //	botbus                              # mint a fresh URL via new.botbus.ai
 //	botbus https://<id>.botbus.ai/      # use this URL
 //	botbus <id>                         # bare channel ID, https:// auto-added
+//	botbus <id> --name NAME             # explicit display name
 //
-//	botbus --listen <id> [--skip NAME …]   # headless listener mode: print
-//	                                       # each peer text message as
-//	                                       # "name: body" on stdout, one per
-//	                                       # line. Designed for agent / Monitor
-//	                                       # wake-up loops. --skip filters
-//	                                       # specific senders (e.g. your own
-//	                                       # name) so you don't notify on
-//	                                       # your own broadcasts. Audio
-//	                                       # frames are dropped silently;
-//	                                       # the update prompt is skipped.
+//	botbus --monitor <id> --name NAME   # headless agent mode: print each
+//	                                    # peer text message as "name: body"
+//	                                    # on stdout, one per line. Designed
+//	                                    # to be wrapped by a Claude Code
+//	                                    # Monitor — peer messages arrive as
+//	                                    # task-notifications, agent replies
+//	                                    # via the botbus MCP gateway. Auto-
+//	                                    # skips messages from --name (the
+//	                                    # agent's own broadcasts) so they
+//	                                    # don't trigger self-notifications.
+//	                                    # MCP setup hints print to stderr.
 //
 // File layout: ui.go owns the TUI (model/view/colors), ws.go owns the
 // WebSocket loop, this file is just orchestration.
@@ -102,37 +104,64 @@ func resolveName() string {
 	return strings.ReplaceAll(n, ": ", "_")
 }
 
-// parseArgs walks os.Args[1:] and returns (channel, listen, skipSet). The
-// shape is intentionally tiny — one positional channel argument plus a
-// --listen toggle and any number of --skip NAME pairs. Anything else is
-// ignored, mirroring the rest of the CLI's minimalist arg handling.
-func parseArgs(argv []string) (channel string, listen bool, skip map[string]struct{}) {
-	skip = map[string]struct{}{}
+// cliArgs is the parsed shape of os.Args. Intentionally tiny: a single
+// positional channel argument plus two flags. Anything unrecognized is
+// silently dropped, matching the rest of the CLI's minimalist arg handling.
+type cliArgs struct {
+	channel string
+	monitor bool
+	name    string
+}
+
+// parseArgs walks os.Args[1:] and returns the parsed flags. --name takes a
+// value; --monitor is a toggle. The first non-flag positional is the channel.
+func parseArgs(argv []string) cliArgs {
+	var a cliArgs
 	for i := 0; i < len(argv); i++ {
-		a := argv[i]
-		switch a {
-		case "--listen":
-			listen = true
-		case "--skip":
+		switch argv[i] {
+		case "--monitor":
+			a.monitor = true
+		case "--name":
 			if i+1 < len(argv) {
-				skip[argv[i+1]] = struct{}{}
+				a.name = argv[i+1]
 				i++
 			}
 		default:
-			if channel == "" {
-				channel = a
+			if a.channel == "" {
+				a.channel = argv[i]
 			}
 		}
 	}
-	return
+	return a
 }
 
-// runListen pumps incoming text frames to stdout one per line as "name: body".
+// monitorBanner returns the stderr greeting printed once at monitor startup.
+// It tells the wrapping agent which channel + name it's connected to and
+// shows the exact MCP tool calls it should use to reply on this specific
+// channel. Goes to stderr so stdout stays a clean stream of peer messages.
+func monitorBanner(channelID, name string) string {
+	return "" +
+		"botbus monitor: connected to https://" + channelID + ".botbus.ai/ as \"" + name + "\"\n" +
+		"\n" +
+		"Each peer message arrives on stdout as \"name: body\" and triggers a\n" +
+		"task-notification. Reply via the botbus MCP gateway:\n" +
+		"\n" +
+		"  mcp__botbus__set_name(name=\"" + name + "\")\n" +
+		"  mcp__botbus__subscribe(channel=\"" + channelID + "\")\n" +
+		"  mcp__botbus__send(channel=\"" + channelID + "\", text=\"…\")\n" +
+		"\n" +
+		"If the botbus MCP gateway isn't yet configured in your environment:\n" +
+		"  claude mcp add --transport http botbus https://mcp.botbus.ai/mcp\n" +
+		"\n"
+}
+
+// runMonitor pumps incoming text frames to stdout one per line as "name: body".
 // Designed for agent wake-up loops: a Monitor wraps this command and gets
-// notified on each peer message. Audio frames are dropped silently — agents
-// don't (yet) handle audio. State changes log to stderr so the wrapping
-// Monitor doesn't see them as channel content.
-func runListen(ctx context.Context, recv, audio <-chan []byte, states <-chan connState, skip map[string]struct{}) {
+// notified on each peer message. The agent's own broadcasts (from `name`)
+// are filtered so the agent doesn't notify on itself. Audio frames are
+// dropped silently — agents don't (yet) handle audio. State changes log to
+// stderr so the wrapping Monitor doesn't see them as channel content.
+func runMonitor(ctx context.Context, recv, audio <-chan []byte, states <-chan connState, name string) {
 	// Drain side channels so runWS never blocks on full buffers.
 	go func() {
 		for range audio {
@@ -158,32 +187,38 @@ func runListen(ctx context.Context, recv, audio <-chan []byte, states <-chan con
 			if !ok {
 				return
 			}
-			name, body, named := parseMsg(m)
+			from, body, named := parseMsg(m)
 			if !named {
 				continue // raw, non-protocol — agents only act on "name: body"
 			}
-			if _, drop := skip[name]; drop {
-				continue
+			if from == name {
+				continue // our own broadcast (cross-connection); skip
 			}
-			fmt.Printf("%s: %s\n", name, body)
+			fmt.Printf("%s: %s\n", from, body)
 		}
 	}
 }
 
 func main() {
-	channel, listen, skip := parseArgs(os.Args[1:])
+	args := parseArgs(os.Args[1:])
 
-	// In listen mode we're being driven by another program (Monitor); skip
-	// the interactive update prompt and the stderr audio-hint to keep
-	// stdout/stderr clean and free of blocking reads.
-	if !listen {
+	// Resolve the user's display name: explicit --name beats env beats default.
+	name := resolveName()
+	if args.name != "" {
+		name = strings.ReplaceAll(args.name, ": ", "_")
+	}
+
+	// In monitor mode we're driven by another program (Monitor wrapping us);
+	// skip the interactive update prompt and the stderr audio-hint so stdout
+	// stays a clean stream and stdin stays unread.
+	if !args.monitor {
 		checkUpdateInteractive()
 		if playerHint != "" {
 			fmt.Fprint(os.Stderr, playerHint)
 		}
 	}
 
-	u, err := resolveURL(channel)
+	u, err := resolveURL(args.channel)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "resolve:", err)
 		os.Exit(1)
@@ -199,13 +234,16 @@ func main() {
 	states := make(chan connState, 4)
 	go runWS(ctx, wsURL(u), recv, audio, send, states)
 
-	if listen {
-		runListen(ctx, recv, audio, states, skip)
+	if args.monitor {
+		// Channel ID is the host minus ".botbus.ai" — strip it for display.
+		channelID := strings.TrimSuffix(hostFromURL(u), ".botbus.ai")
+		fmt.Fprint(os.Stderr, monitorBanner(channelID, name))
+		runMonitor(ctx, recv, audio, states, name)
 		return
 	}
 
 	go runAudio(ctx, audio)
-	p := tea.NewProgram(newModel(hostFromURL(u), resolveName(), recv, states, send), tea.WithAltScreen())
+	p := tea.NewProgram(newModel(hostFromURL(u), name, recv, states, send), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

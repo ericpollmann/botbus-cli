@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestResolveURL_NonMinting(t *testing.T) {
 	cases := []struct {
@@ -54,42 +57,48 @@ func TestParseMsg(t *testing.T) {
 
 func TestParseArgs(t *testing.T) {
 	cases := []struct {
-		desc       string
-		argv       []string
-		wantCh     string
-		wantListen bool
-		wantSkip   []string
+		desc        string
+		argv        []string
+		wantCh      string
+		wantMonitor bool
+		wantName    string
 	}{
-		{"empty", nil, "", false, nil},
-		{"just channel", []string{"abc123"}, "abc123", false, nil},
-		{"listen flag alone", []string{"--listen"}, "", true, nil},
-		{"listen + channel",
-			[]string{"--listen", "abc123"}, "abc123", true, nil},
-		{"channel before listen flag",
-			[]string{"abc123", "--listen"}, "abc123", true, nil},
-		{"listen + multiple skips",
-			[]string{"--listen", "abc", "--skip", "claude", "--skip", "agent"},
-			"abc", true, []string{"claude", "agent"}},
-		{"skip without value is ignored",
-			[]string{"--listen", "abc", "--skip"},
-			"abc", true, nil},
+		{"empty", nil, "", false, ""},
+		{"just channel", []string{"abc123"}, "abc123", false, ""},
+		{"monitor flag alone", []string{"--monitor"}, "", true, ""},
+		{"monitor + channel + name",
+			[]string{"--monitor", "abc123", "--name", "alpha"},
+			"abc123", true, "alpha"},
+		{"channel before monitor",
+			[]string{"abc123", "--monitor", "--name", "beta"},
+			"abc123", true, "beta"},
+		{"name alone (no monitor)",
+			[]string{"abc", "--name", "gamma"},
+			"abc", false, "gamma"},
+		{"--name without value is ignored",
+			[]string{"abc", "--name"}, "abc", false, ""},
 		{"extra positional ignored",
-			[]string{"abc", "extra"}, "abc", false, nil},
+			[]string{"abc", "extra"}, "abc", false, ""},
 	}
 	for _, c := range cases {
-		ch, listen, skip := parseArgs(c.argv)
-		if ch != c.wantCh || listen != c.wantListen {
-			t.Errorf("%s: got (channel=%q, listen=%v); want (%q, %v)",
-				c.desc, ch, listen, c.wantCh, c.wantListen)
+		got := parseArgs(c.argv)
+		if got.channel != c.wantCh || got.monitor != c.wantMonitor || got.name != c.wantName {
+			t.Errorf("%s: got %+v; want channel=%q monitor=%v name=%q",
+				c.desc, got, c.wantCh, c.wantMonitor, c.wantName)
 		}
-		if len(skip) != len(c.wantSkip) {
-			t.Errorf("%s: skip size %d, want %d (%v)", c.desc, len(skip), len(c.wantSkip), c.wantSkip)
-			continue
-		}
-		for _, n := range c.wantSkip {
-			if _, ok := skip[n]; !ok {
-				t.Errorf("%s: skip set missing %q (got %v)", c.desc, n, skip)
-			}
+	}
+}
+
+func TestMonitorBanner(t *testing.T) {
+	got := monitorBanner("abc123", "alpha")
+	// Sanity: includes channel id, name, and key MCP tool names.
+	for _, want := range []string{
+		"abc123", "alpha",
+		"mcp__botbus__set_name", "mcp__botbus__subscribe", "mcp__botbus__send",
+		"https://mcp.botbus.ai/mcp",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("monitorBanner missing %q in:\n%s", want, got)
 		}
 	}
 }
