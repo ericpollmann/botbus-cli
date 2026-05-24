@@ -67,6 +67,35 @@ func parseMsg(b []byte) (name, body string, named bool) {
 	return "", s, false
 }
 
+// visualRows reports the total number of rendered terminal rows the given
+// content will occupy after soft-wrapping at the given width. Returns at
+// least 1 even for empty content. This mirrors how bubbles/textarea wraps
+// internally (character-level at width m.width) — we recompute here because
+// the textarea's wrap function is unexported and its View() always pads to
+// the configured Height so counting "\n" in View output is uninformative.
+//
+// Used by the Update loop to keep the textarea's height tracking the
+// content's visual size so wrapped lines don't get hidden by the internal
+// viewport scrolling cursor into view.
+func visualRows(value string, width int) int {
+	if width <= 0 || value == "" {
+		return 1
+	}
+	total := 0
+	for _, line := range strings.Split(value, "\n") {
+		vw := lipgloss.Width(line)
+		rows := (vw + width - 1) / width
+		if rows < 1 {
+			rows = 1
+		}
+		total += rows
+	}
+	if total < 1 {
+		total = 1
+	}
+	return total
+}
+
 // renderSlash returns the styled string for /me and /dm slash commands, or
 // ("", false) if body isn't a recognized slash command. Both commands render
 // in italic in the speaker's color. /dm is a convention only — the channel
@@ -249,17 +278,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.msgs = append(m.msgs, errStyle.Render("! "+msg.Error()))
 		return m, nil
 	}
+	// textarea's internal repositionView() scrolls the cursor into the
+	// current viewport.Height during Update — if Height is smaller than the
+	// new cursor row (e.g. just after shift+enter or a soft-wrap), the top
+	// of the input gets hidden by viewport YOffset. Pre-set Height to the
+	// max we'd ever want so the cursor always stays in view during the
+	// keypress, then trim to the actual visual content size after.
+	m.input.SetHeight(maxInputRows)
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
-	// Auto-resize input to fit content, capped at maxInputRows.
-	h := m.input.LineCount()
-	if h < 1 {
-		h = 1
+	target := visualRows(m.input.Value(), m.input.Width())
+	if target > maxInputRows {
+		target = maxInputRows
 	}
-	if h > maxInputRows {
-		h = maxInputRows
+	if target < 1 {
+		target = 1
 	}
-	m.input.SetHeight(h)
+	m.input.SetHeight(target)
 	return m, cmd
 }
 
@@ -321,15 +356,27 @@ func (m model) View() string {
 	if maxLines < 1 {
 		maxLines = 1
 	}
-	start := 0
-	if len(m.msgs) > maxLines {
-		start = len(m.msgs) - maxLines
+
+	// Wrap scrollback messages so long lines don't get truncated at the
+	// terminal edge; collect from newest backwards until we've filled
+	// maxLines worth of visual rows. lipgloss.Width(w).Render handles
+	// ANSI-aware soft-wrapping at the right cell column.
+	wrapStyle := lipgloss.NewStyle().Width(w)
+	var displayed []string
+	totalRows := 0
+	for i := len(m.msgs) - 1; i >= 0; i-- {
+		wrapped := wrapStyle.Render(m.msgs[i])
+		rows := strings.Count(wrapped, "\n") + 1
+		if totalRows+rows > maxLines {
+			break
+		}
+		displayed = append([]string{wrapped}, displayed...)
+		totalRows += rows
 	}
-	shown := m.msgs[start:]
-	for i := len(shown); i < maxLines; i++ {
+	for i := totalRows; i < maxLines; i++ {
 		b.WriteByte('\n')
 	}
-	for _, line := range shown {
+	for _, line := range displayed {
 		b.WriteString(line)
 		b.WriteByte('\n')
 	}

@@ -116,6 +116,32 @@ func TestIsTypedFrame(t *testing.T) {
 	}
 }
 
+func TestVisualRows(t *testing.T) {
+	cases := []struct {
+		desc  string
+		value string
+		width int
+		want  int
+	}{
+		{"empty", "", 80, 1},
+		{"width-zero short-circuit", "anything", 0, 1},
+		{"width-negative", "anything", -5, 1},
+		{"one short line", "hello", 80, 1},
+		{"two short lines via explicit newline", "hello\nworld", 80, 2},
+		{"three lines incl. blank middle", "a\n\nb", 80, 3},
+		{"single line wrapping to 2 rows", "abcdefghij", 5, 2}, // 10 chars / 5 = 2
+		{"single line wrapping to 3 rows", "abcdefghijk", 5, 3}, // 11/5 = 3 (ceil)
+		{"mixed: one short, one wrapping", "hi\nabcdefghij", 5, 3}, // 1 + 2
+		{"exact width", "12345", 5, 1},
+		{"one over", "123456", 5, 2},
+	}
+	for _, c := range cases {
+		if got := visualRows(c.value, c.width); got != c.want {
+			t.Errorf("%s: visualRows(%q, %d) = %d, want %d", c.desc, c.value, c.width, got, c.want)
+		}
+	}
+}
+
 func TestRenderSlash(t *testing.T) {
 	// Exact rendered output depends on lipgloss color codes which vary by
 	// terminal profile in tests. Strip ANSI and look for the textual content.
