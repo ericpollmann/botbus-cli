@@ -28,7 +28,9 @@ func runWS(ctx context.Context, target string, recv, audio chan<- []byte, send <
 			}
 			continue
 		}
-		ws.SetReadLimit(64 * 1024)
+		// Match server-side readLimit (and web MAX_FRAME) — 256KB covers
+		// ~30-60s of audio in a single 0x01 frame.
+		ws.SetReadLimit(256 * 1024)
 
 		// First frame is the server's binary "ok" handshake.
 		if typ, m, rerr := ws.Read(ctx); rerr != nil || typ != websocket.MessageBinary || string(m) != "ok" {
