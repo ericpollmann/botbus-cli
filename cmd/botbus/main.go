@@ -94,6 +94,11 @@ func main() {
 	if len(os.Args) > 1 {
 		arg = os.Args[1]
 	}
+
+	// Run the self-update check before the TUI grabs stdin. Silent / no-op
+	// on devel builds, missing network, or BOTBUS_NO_UPDATE_CHECK=1.
+	checkUpdateInteractive()
+
 	u, err := resolveURL(arg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "resolve:", err)
