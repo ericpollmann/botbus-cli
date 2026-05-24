@@ -52,6 +52,48 @@ func TestParseMsg(t *testing.T) {
 	}
 }
 
+func TestParseArgs(t *testing.T) {
+	cases := []struct {
+		desc       string
+		argv       []string
+		wantCh     string
+		wantListen bool
+		wantSkip   []string
+	}{
+		{"empty", nil, "", false, nil},
+		{"just channel", []string{"abc123"}, "abc123", false, nil},
+		{"listen flag alone", []string{"--listen"}, "", true, nil},
+		{"listen + channel",
+			[]string{"--listen", "abc123"}, "abc123", true, nil},
+		{"channel before listen flag",
+			[]string{"abc123", "--listen"}, "abc123", true, nil},
+		{"listen + multiple skips",
+			[]string{"--listen", "abc", "--skip", "claude", "--skip", "agent"},
+			"abc", true, []string{"claude", "agent"}},
+		{"skip without value is ignored",
+			[]string{"--listen", "abc", "--skip"},
+			"abc", true, nil},
+		{"extra positional ignored",
+			[]string{"abc", "extra"}, "abc", false, nil},
+	}
+	for _, c := range cases {
+		ch, listen, skip := parseArgs(c.argv)
+		if ch != c.wantCh || listen != c.wantListen {
+			t.Errorf("%s: got (channel=%q, listen=%v); want (%q, %v)",
+				c.desc, ch, listen, c.wantCh, c.wantListen)
+		}
+		if len(skip) != len(c.wantSkip) {
+			t.Errorf("%s: skip size %d, want %d (%v)", c.desc, len(skip), len(c.wantSkip), c.wantSkip)
+			continue
+		}
+		for _, n := range c.wantSkip {
+			if _, ok := skip[n]; !ok {
+				t.Errorf("%s: skip set missing %q (got %v)", c.desc, n, skip)
+			}
+		}
+	}
+}
+
 func TestParseAudioFrame(t *testing.T) {
 	cases := []struct {
 		desc      string
