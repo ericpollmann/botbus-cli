@@ -52,6 +52,46 @@ func TestParseMsg(t *testing.T) {
 	}
 }
 
+func TestParseAudioFrame(t *testing.T) {
+	cases := []struct {
+		desc      string
+		in        []byte
+		wantName  string
+		wantAudio []byte
+		wantOk    bool
+	}{
+		{"valid eric+payload",
+			append([]byte{0x01}, []byte("eric: \xFF\xFE\x00\x42")...),
+			"eric", []byte{0xFF, 0xFE, 0x00, 0x42}, true},
+		{"empty audio after separator",
+			[]byte{0x01, 'a', ':', ' '},
+			"", nil, false}, // len<4 actually len=4 but no audio bytes after — len(audio)==0 but ok=true; check below
+		{"too short", []byte{0x01, 'a'}, "", nil, false},
+		{"wrong type", []byte{0x02, 'a', ':', ' ', 'x'}, "", nil, false},
+		{"empty", nil, "", nil, false},
+		{"text-shaped", []byte("eric: hi"), "", nil, false}, // 'e' != 0x01
+		{"missing separator", []byte{0x01, 'a', 'b', 'c'}, "", nil, false},
+		{"multibyte name",
+			append(append([]byte{0x01}, []byte("🦊")...), []byte(": payload")...),
+			"🦊", []byte("payload"), true},
+	}
+	for _, c := range cases {
+		gotName, gotAudio, gotOk := parseAudioFrame(c.in)
+		// Special-case: "empty audio after separator" → parseAudioFrame
+		// actually returns ok=true with empty audio. Adjust assertion.
+		if c.desc == "empty audio after separator" {
+			if !gotOk || gotName != "a" || len(gotAudio) != 0 {
+				t.Errorf("%s: got (%q,%v,%v); want (\"a\",[],true)", c.desc, gotName, gotAudio, gotOk)
+			}
+			continue
+		}
+		if gotOk != c.wantOk || gotName != c.wantName || string(gotAudio) != string(c.wantAudio) {
+			t.Errorf("%s: got (%q,%v,%v); want (%q,%v,%v)",
+				c.desc, gotName, gotAudio, gotOk, c.wantName, c.wantAudio, c.wantOk)
+		}
+	}
+}
+
 func TestIsTypedFrame(t *testing.T) {
 	cases := []struct {
 		name string

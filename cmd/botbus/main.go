@@ -104,9 +104,11 @@ func main() {
 	defer cancel()
 
 	recv := make(chan []byte, 64)
+	audio := make(chan []byte, 8)
 	send := make(chan []byte, 16)
 	states := make(chan connState, 4)
-	go runWS(ctx, wsURL(u), recv, send, states)
+	go runWS(ctx, wsURL(u), recv, audio, send, states)
+	go runAudio(ctx, audio)
 
 	p := tea.NewProgram(newModel(hostFromURL(u), resolveName(), recv, states, send), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {

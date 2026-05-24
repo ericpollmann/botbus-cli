@@ -7,14 +7,16 @@ import (
 	"github.com/coder/websocket"
 )
 
-// runWS keeps a single WebSocket connection alive. It pumps received frames
-// into recv, drains outgoing user lines from send, and reconnects with 2s
-// backoff on drop. Connection state is reported on states.
+// runWS keeps a single WebSocket connection alive. It pumps received text
+// frames into recv, routes 0x01 audio frames to audio (best-effort — full
+// buffer drops silently rather than backpressure the reader), drains
+// outgoing user lines from send, and reconnects with 2s backoff on drop.
+// Connection state is reported on states.
 //
 // Server excludes the sender's *Conn from broadcasts, so frames we send do
 // not echo back on recv — the UI's local "→ text" line is the only display
 // of our own messages.
-func runWS(ctx context.Context, target string, recv chan<- []byte, send <-chan []byte, states chan<- connState) {
+func runWS(ctx context.Context, target string, recv, audio chan<- []byte, send <-chan []byte, states chan<- connState) {
 	defer close(recv)
 	for ctx.Err() == nil {
 		states <- stConnecting
@@ -47,7 +49,18 @@ func runWS(ctx context.Context, target string, recv chan<- []byte, send <-chan [
 				if err != nil {
 					return
 				}
-				// Drop typed (non-text) frames — audio etc. The CLI is text-only.
+				// Route 0x01 audio frames to the audio player; drop other
+				// typed frames (reserved type bytes the CLI doesn't know).
+				if len(m) > 0 && m[0] == 0x01 {
+					select {
+					case audio <- m:
+					case <-ctx.Done():
+						return
+					default:
+						// audio channel full — drop rather than backpressure
+					}
+					continue
+				}
 				if isTypedFrame(m) {
 					continue
 				}
