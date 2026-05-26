@@ -150,9 +150,16 @@ type model struct {
 	states     <-chan connState
 	send       chan<- []byte
 	w, h       int
+	welcome    welcomeState
 }
 
-func newModel(host, myName string, recv <-chan []byte, states <-chan connState, send chan<- []byte) model {
+// newModel builds the bubbletea model. fresh=true means we just minted this
+// channel for the user (botbus run with no channel arg) — the welcome popup
+// then uses the "Your new private channel." copy and auto-shows regardless
+// of the per-channel welcomed marker. fresh=false means the user joined an
+// existing channel; the popup shows once per new-to-this-machine channel,
+// gated by ~/.config/botbus/welcomed/<id>.
+func newModel(host, myName string, fresh bool, recv <-chan []byte, states <-chan connState, send chan<- []byte) model {
 	// SetPromptFunc renders the user's own colored name on line 0 and an
 	// equal-width blank indent on subsequent lines so multi-line input
 	// aligns nicely under the first line of text.
@@ -180,10 +187,19 @@ func newModel(host, myName string, recv <-chan []byte, states <-chan connState, 
 		return indent
 	})
 	ta.Focus()
+	// Auto-show the welcome popup on fresh mint OR on first visit to a
+	// previously-unseen channel. The per-channel marker file gates the
+	// second case so re-launching against a known channel doesn't pop the
+	// popup again. The fresh flag wins over the marker so a fresh-mint
+	// always shows even if (somehow) the channel ID collided with one we
+	// previously welcomed.
+	channelID := channelIDFromHost(host)
+	autoShow := fresh || !isWelcomed(channelID)
 	return model{
 		host: host, myName: myName, state: stConnecting, input: ta,
 		recv: recv, states: states, send: send,
 		seenColors: map[int]time.Time{},
+		welcome:    welcomeState{visible: autoShow, fresh: fresh},
 	}
 }
 
@@ -243,6 +259,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.SetWidth(w)
 		return m, nil
 	case tea.KeyMsg:
+		// Welcome popup intercepts most keys while visible. Ctrl-C still
+		// quits (universal escape hatch); Ctrl-H, Esc, and Enter dismiss.
+		// Other keys are swallowed so the user doesn't accidentally start
+		// typing chat into a hidden input field.
+		if m.welcome.visible {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "ctrl+h", "esc", "enter":
+				m.welcome.visible = false
+				// Persist that we've shown this user the welcome for this
+				// channel; ignore errors (re-popping next time is harmless).
+				_ = markWelcomed(channelIDFromHost(m.host))
+				return m, nil
+			}
+			// Everything else: do nothing, but DON'T fall through to the
+			// textarea update at the bottom of this function — we want the
+			// chat input inert while the popup is up.
+			return m, nil
+		}
+		// Ctrl-H re-summons the popup at any time (preserves the fresh
+		// variant if this run was a fresh mint).
+		if msg.String() == "ctrl+h" {
+			m.welcome.visible = true
+			return m, nil
+		}
 		switch msg.String() {
 		case "esc", "ctrl+c":
 			return m, tea.Quit
@@ -340,6 +382,26 @@ func (m model) View() string {
 		w = 80
 	}
 	var b strings.Builder
+
+	// Welcome popup overlay: render the top bar so the user can still see
+	// the connection state, then fill the rest of the viewport with the
+	// centered popup. Input is hidden — the popup's footer line tells the
+	// user how to dismiss.
+	if m.welcome.visible {
+		left, right := "BOTBUS · "+m.host, m.renderDots()
+		pad := w - 2 - lipgloss.Width(left) - lipgloss.Width(right)
+		if pad < 1 {
+			pad = 1
+		}
+		b.WriteString(barStyle.Render(left + strings.Repeat(" ", pad) + right))
+		b.WriteByte('\n')
+		channelID := channelIDFromHost(m.host)
+		popup := renderWelcomePopup(channelID, m.welcome.fresh, w)
+		// Center vertically in the remaining h-1 rows.
+		placed := lipgloss.Place(w, h-1, lipgloss.Center, lipgloss.Center, popup)
+		b.WriteString(placed)
+		return b.String()
+	}
 
 	left, right := "BOTBUS · "+m.host, m.renderDots()
 	pad := w - 2 - lipgloss.Width(left) - lipgloss.Width(right)

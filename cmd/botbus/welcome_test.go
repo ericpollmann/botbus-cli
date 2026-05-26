@@ -115,3 +115,56 @@ func mustNotContain(t *testing.T, body, want string) {
 
 // Defensive: filepath import used only inside tests on the marker path.
 var _ = filepath.Join
+
+// TestModelWelcomeFreshAutoShows: a model built with fresh=true should have
+// welcome.visible set, regardless of the per-channel marker file.
+func TestModelWelcomeFreshAutoShows(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
+	// Even when the channel was previously welcomed, fresh=true overrides.
+	const id = "fresh-test-channel-id"
+	if err := markWelcomed(id); err != nil {
+		t.Fatal(err)
+	}
+	recv := make(chan []byte)
+	states := make(chan connState)
+	send := make(chan []byte)
+	m := newModel(id+".botbus.ai", "me", true, recv, states, send)
+	if !m.welcome.visible {
+		t.Error("fresh=true should auto-show the welcome popup even when marker exists")
+	}
+	if !m.welcome.fresh {
+		t.Error("welcome.fresh should be true so the 'new channel' header copy fires")
+	}
+}
+
+// TestModelWelcomeReturningGated: a model built with fresh=false should
+// auto-show ONLY when the per-channel marker is absent.
+func TestModelWelcomeReturningGated(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
+	const id = "returning-test-channel-id"
+	recv := make(chan []byte)
+	states := make(chan connState)
+	send := make(chan []byte)
+
+	// First visit: marker absent → should show.
+	m1 := newModel(id+".botbus.ai", "me", false, recv, states, send)
+	if !m1.welcome.visible {
+		t.Error("first visit (no marker) should auto-show")
+	}
+	if m1.welcome.fresh {
+		t.Error("fresh=false should yield welcome.fresh=false for 'welcome to channel' copy")
+	}
+
+	// Mark welcomed, then build a fresh model — should NOT show.
+	if err := markWelcomed(id); err != nil {
+		t.Fatal(err)
+	}
+	m2 := newModel(id+".botbus.ai", "me", false, recv, states, send)
+	if m2.welcome.visible {
+		t.Error("second visit (marker present) should not auto-show")
+	}
+}

@@ -243,7 +243,12 @@ func main() {
 	}
 
 	go runAudio(ctx, audio)
-	p := tea.NewProgram(newModel(hostFromURL(u), name, recv, states, send), tea.WithAltScreen())
+	// fresh: the user ran `botbus` with no positional channel arg, so we
+	// just minted a new channel via new.botbus.ai. The welcome popup uses
+	// the "Your new private channel." copy when fresh and auto-shows
+	// regardless of the per-channel marker file.
+	fresh := args.channel == ""
+	p := tea.NewProgram(newModel(hostFromURL(u), name, fresh, recv, states, send), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
