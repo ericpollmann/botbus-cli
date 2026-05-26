@@ -52,10 +52,10 @@ func TestPseudoVersionDate(t *testing.T) {
 
 func TestIsStrictlyNewer(t *testing.T) {
 	cases := []struct {
-		desc       string
-		latest     string
-		cur        string
-		wantNewer  bool
+		desc      string
+		latest    string
+		cur       string
+		wantNewer bool
 	}{
 		{"latest newer than cur",
 			"v0.0.0-20260524003103-aaa", "v0.0.0-20260524001745-bbb", true},

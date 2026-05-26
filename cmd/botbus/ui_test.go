@@ -44,7 +44,7 @@ func TestParseMsg(t *testing.T) {
 		{"plain text", "", "plain text", false},
 		{"", "", "", false},
 		{": leading colon", "", ": leading colon", false}, // i==0 → no split, raw text
-		{"a:b", "", "a:b", false},          // no space after colon
+		{"a:b", "", "a:b", false},                         // no space after colon
 	}
 	for _, c := range cases {
 		name, body, ok := parseMsg([]byte(c.in))
@@ -180,8 +180,8 @@ func TestVisualRows(t *testing.T) {
 		{"one short line", "hello", 80, 1},
 		{"two short lines via explicit newline", "hello\nworld", 80, 2},
 		{"three lines incl. blank middle", "a\n\nb", 80, 3},
-		{"single line wrapping to 2 rows", "abcdefghij", 5, 2}, // 10 chars / 5 = 2
-		{"single line wrapping to 3 rows", "abcdefghijk", 5, 3}, // 11/5 = 3 (ceil)
+		{"single line wrapping to 2 rows", "abcdefghij", 5, 2},     // 10 chars / 5 = 2
+		{"single line wrapping to 3 rows", "abcdefghijk", 5, 3},    // 11/5 = 3 (ceil)
 		{"mixed: one short, one wrapping", "hi\nabcdefghij", 5, 3}, // 1 + 2
 		{"exact width", "12345", 5, 1},
 		{"one over", "123456", 5, 2},
@@ -224,11 +224,11 @@ func TestRenderSlash(t *testing.T) {
 		{"eric", "/me nods", "* eric nods"},
 		{"eric", "/me nods head vigorously", "* eric nods head vigorously"},
 		{"eric", "/dm alice hello there", "eric → alice: hello there"},
-		{"eric", "/dm alice", ""},     // no space after target
-		{"eric", "/me", ""},           // no space after /me
-		{"eric", "hello world", ""},   // plain text
-		{"eric", "", ""},              // empty body
-		{"eric", "/dme nope", ""},     // not /dm with space
+		{"eric", "/dm alice", ""},        // no space after target
+		{"eric", "/me", ""},              // no space after /me
+		{"eric", "hello world", ""},      // plain text
+		{"eric", "", ""},                 // empty body
+		{"eric", "/dme nope", ""},        // not /dm with space
 		{"eric", "/dm  doubleblank", ""}, // empty target rejected (sp at index 0, sp > 0 false)
 	}
 	for _, c := range cases {
