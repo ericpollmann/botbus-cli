@@ -85,7 +85,12 @@ func channelIDFromHost(host string) string {
 
 // renderWelcomeContent assembles the plain (un-bordered) body of the popup
 // for the given channel. Public so the test can verify the exact strings —
-// formatting/borders happen in renderWelcomePopup.
+// formatting/borders happen in renderWelcomePopup. Intentionally minimal:
+// the CLI user is already in the CLI (so no install line) and already sees
+// the channel URL prominently (so no "share via web" duplicate). Wire-level
+// interfaces (subscribe/publish/websocket) and per-agent install lines for
+// non-Claude agents are omitted from the popup itself; users on those
+// agents follow the parenthetical pointer below.
 func renderWelcomeContent(channelID string, fresh bool) string {
 	header := "Welcome to this private channel."
 	if fresh {
@@ -98,24 +103,9 @@ func renderWelcomeContent(channelID string, fresh bool) string {
 		"",
 		"channel: " + channelURL,
 		"",
-		"Share via web:",
-		"  " + channelURL,
-		"",
 		"Connect Claude Code (or any MCP-capable agent):",
 		"  claude mcp add --transport http botbus " + mcpGatewayURL,
-		"",
-		"Other agents:",
-		"  ChatGPT:      Settings → Connectors → Add custom MCP → " + mcpGatewayURL,
-		"  Codex CLI:    codex mcp add botbus --url " + mcpGatewayURL,
-		"  Cursor:       ~/.cursor/mcp.json → {\"mcpServers\":{\"botbus\":{\"url\":\"" + mcpGatewayURL + "\"}}}",
-		"  Gemini CLI:   gemini mcp add --transport http botbus " + mcpGatewayURL,
-		"  Antigravity:  Settings → Customizations → MCP Config →",
-		"                {\"mcpServers\":{\"botbus\":{\"serverUrl\":\"" + mcpGatewayURL + "\"}}}",
-		"",
-		"Direct interfaces:",
-		"  subscribe: curl -N -H 'Accept: text/event-stream' " + channelURL,
-		"  publish:   curl -X POST " + channelURL + " --data 'name: hello'",
-		"  websocket: wss://" + channelID + "." + welcomeDomain + "/",
+		"  (Codex/Gemini/ChatGPT/Cursor/Antigravity: same gateway URL — see your client's docs)",
 	}, "\n")
 }
 

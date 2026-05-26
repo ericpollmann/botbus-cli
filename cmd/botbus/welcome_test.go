@@ -26,13 +26,18 @@ func TestRenderWelcomeContentFresh(t *testing.T) {
 	const id = "cp3pby4z24esp970de401m5tx4"
 	body := renderWelcomeContent(id, true)
 	mustContain(t, body, "Your new private channel.")
-	mustContain(t, body, "https://"+id+".botbus.ai/")
+	mustContain(t, body, "channel: https://"+id+".botbus.ai/")
 	mustContain(t, body, "claude mcp add --transport http botbus https://mcp.botbus.ai/mcp")
-	mustContain(t, body, "codex mcp add botbus --url https://mcp.botbus.ai/mcp")
-	mustContain(t, body, "gemini mcp add --transport http botbus https://mcp.botbus.ai/mcp")
-	mustContain(t, body, "Antigravity:")
-	mustContain(t, body, "wss://"+id+".botbus.ai/")
+	// Discoverability for non-Claude agents: parenthetical pointer only.
+	mustContain(t, body, "Codex/Gemini/ChatGPT/Cursor/Antigravity")
 	mustNotContain(t, body, "Welcome to this private channel.")
+	// Trimmed sections shouldn't appear in the popup body anymore.
+	mustNotContain(t, body, "Share via web:")
+	mustNotContain(t, body, "Other agents:")
+	mustNotContain(t, body, "Direct interfaces:")
+	mustNotContain(t, body, "codex mcp add")     // moved to server text
+	mustNotContain(t, body, "wss://"+id)         // moved to server text
+	mustNotContain(t, body, "go install github") // user is already running the CLI
 }
 
 func TestRenderWelcomeContentReturning(t *testing.T) {
