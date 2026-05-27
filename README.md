@@ -105,8 +105,8 @@ and `send` excludes the agent's own subscription from broadcasts so
 cmd/botbus/        TUI chat client + headless listener
 ├── main.go        arg parsing, listen-mode pump, runWS wiring, tea bootstrap
 ├── ui.go          bubbletea model + view + palette + slash commands
-├── ws.go          WebSocket read/send loop with auto-reconnect
-├── audio.go       0x01 audio frame playback (ffplay/mpv/mplayer/afplay)
+├── ws.go          text + audio WebSocket read/send loops with auto-reconnect
+├── audio.go       /audio stream frame playback (ffplay/mpv/mplayer/afplay)
 ├── updater.go     self-update check against proxy.golang.org
 └── *_test.go      unit tests
 ```

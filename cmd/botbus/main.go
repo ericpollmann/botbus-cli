@@ -89,6 +89,14 @@ func wsURL(u string) string {
 	return u
 }
 
+// channelStreamURLs splits a channel URL into the two stream WebSocket URLs:
+// the text endpoint ("/") and the audio endpoint ("/audio"). Server-side
+// these are independent fan-out sets keyed by URL path.
+func channelStreamURLs(httpURL string) (text, audio string) {
+	base := strings.TrimRight(wsURL(httpURL), "/")
+	return base + "/", base + "/audio"
+}
+
 // resolveName picks a chat name: $BOTBUS_NAME, then $USER, then anon-NNN.
 // Stripped of ": " sequences (would break the message-parsing convention).
 func resolveName() string {
@@ -232,7 +240,9 @@ func main() {
 	audio := make(chan []byte, 8)
 	send := make(chan []byte, 16)
 	states := make(chan connState, 4)
-	go runWS(ctx, wsURL(u), recv, audio, send, states)
+	textURL, audioURL := channelStreamURLs(u)
+	go runWSText(ctx, textURL, recv, send, states)
+	go runWSAudio(ctx, audioURL, audio)
 
 	if args.monitor {
 		// Channel ID is the host minus ".botbus.ai" — strip it for display.
