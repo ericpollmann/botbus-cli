@@ -1,12 +1,15 @@
 package main
 
-// audio.go — playback of incoming 0x01 audio frames.
+// audio.go — playback of incoming audio frames from the /audio stream.
 //
 // The CLI is text-first, but voice listeners on the web UI broadcast audio
 // alongside transcripts. To keep the CLI useful in a voice-heavy channel,
 // we play received audio through a native command-line player. macOS's
 // built-in afplay handles WebM/Opus on modern versions; ffplay/mpv/mplayer
 // are tried in turn as portable fallbacks.
+//
+// Audio frames arrive on a separate WebSocket (/audio path) — there is no
+// type-byte multiplexing; the URL is what makes them audio frames.
 //
 // Playback is serial: one frame plays to completion before the next starts.
 // A 64KB cap on frame size puts an upper bound on each clip (~5-10 seconds
@@ -54,18 +57,22 @@ func init() {
 	}
 }
 
-// parseAudioFrame extracts the audio payload from a 0x01 typed frame:
+// parseAudioFrame extracts the audio payload from a wire frame on the
+// /audio stream:
 //
-//	[0x01][name UTF-8][": "][audio bytes]
+//	[name UTF-8][": "][audio bytes]
 //
 // Returns ("", nil, false) for any malformed frame.
 func parseAudioFrame(m []byte) (name string, audio []byte, ok bool) {
-	if len(m) < 4 || m[0] != 0x01 {
+	if len(m) < 3 {
 		return "", nil, false
 	}
-	for i := 1; i < len(m)-1; i++ {
+	for i := 0; i < len(m)-1; i++ {
 		if m[i] == ':' && m[i+1] == ' ' {
-			return string(m[1:i]), m[i+2:], true
+			if i == 0 {
+				return "", nil, false // empty name
+			}
+			return string(m[:i]), m[i+2:], true
 		}
 	}
 	return "", nil, false

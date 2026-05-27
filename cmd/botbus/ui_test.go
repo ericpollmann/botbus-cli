@@ -112,57 +112,24 @@ func TestParseAudioFrame(t *testing.T) {
 		wantOk    bool
 	}{
 		{"valid eric+payload",
-			append([]byte{0x01}, []byte("eric: \xFF\xFE\x00\x42")...),
+			[]byte("eric: \xFF\xFE\x00\x42"),
 			"eric", []byte{0xFF, 0xFE, 0x00, 0x42}, true},
 		{"empty audio after separator",
-			[]byte{0x01, 'a', ':', ' '},
-			"", nil, false}, // len<4 actually len=4 but no audio bytes after — len(audio)==0 but ok=true; check below
-		{"too short", []byte{0x01, 'a'}, "", nil, false},
-		{"wrong type", []byte{0x02, 'a', ':', ' ', 'x'}, "", nil, false},
+			[]byte("a: "),
+			"a", []byte{}, true},
+		{"too short", []byte("a"), "", nil, false},
 		{"empty", nil, "", nil, false},
-		{"text-shaped", []byte("eric: hi"), "", nil, false}, // 'e' != 0x01
-		{"missing separator", []byte{0x01, 'a', 'b', 'c'}, "", nil, false},
+		{"missing separator", []byte("abcdef"), "", nil, false},
+		{"empty name", []byte(": payload"), "", nil, false},
 		{"multibyte name",
-			append(append([]byte{0x01}, []byte("🦊")...), []byte(": payload")...),
+			append([]byte("🦊"), []byte(": payload")...),
 			"🦊", []byte("payload"), true},
 	}
 	for _, c := range cases {
 		gotName, gotAudio, gotOk := parseAudioFrame(c.in)
-		// Special-case: "empty audio after separator" → parseAudioFrame
-		// actually returns ok=true with empty audio. Adjust assertion.
-		if c.desc == "empty audio after separator" {
-			if !gotOk || gotName != "a" || len(gotAudio) != 0 {
-				t.Errorf("%s: got (%q,%v,%v); want (\"a\",[],true)", c.desc, gotName, gotAudio, gotOk)
-			}
-			continue
-		}
 		if gotOk != c.wantOk || gotName != c.wantName || string(gotAudio) != string(c.wantAudio) {
 			t.Errorf("%s: got (%q,%v,%v); want (%q,%v,%v)",
 				c.desc, gotName, gotAudio, gotOk, c.wantName, c.wantAudio, c.wantOk)
-		}
-	}
-}
-
-func TestIsTypedFrame(t *testing.T) {
-	cases := []struct {
-		name string
-		in   []byte
-		want bool
-	}{
-		{"empty", nil, false},
-		{"empty-slice", []byte{}, false},
-		{"text", []byte("eric: hi"), false},
-		{"text-with-leading-space", []byte(" leading space"), false},
-		{"text-with-leading-digit", []byte("9lives: meow"), false},
-		{"text-with-leading-emoji", []byte("🦊: hi"), false}, // multibyte UTF-8 start byte is >= 0xC0
-		{"audio-frame", []byte{0x01, 'e', 'r', 'i', 'c', ':', ' ', 0xFF, 0xFE}, true},
-		{"reserved-frame-02", []byte{0x02, 0x00}, true},
-		{"reserved-frame-1F", []byte{0x1F}, true},
-		{"boundary-0x20-is-text", []byte{0x20, 'a'}, false}, // 0x20 = space, treat as text
-	}
-	for _, c := range cases {
-		if got := isTypedFrame(c.in); got != c.want {
-			t.Errorf("%s: isTypedFrame(%v) = %v, want %v", c.name, c.in, got, c.want)
 		}
 	}
 }
