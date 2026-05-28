@@ -2,10 +2,21 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"time"
 
 	"github.com/coder/websocket"
 )
+
+// dialOpts returns the WebSocket dial options used by both runWSText and
+// runWSAudio. Setting User-Agent here lets the server's classifyUA bucket
+// our WS upgrades as classCLI alongside the new.botbus.ai mint and proxy
+// lookup in updater.go.
+func dialOpts() *websocket.DialOptions {
+	return &websocket.DialOptions{
+		HTTPHeader: http.Header{"User-Agent": []string{userAgent()}},
+	}
+}
 
 // Per-stream byte caps mirror the server's streamType.readLimit() in
 // botbus/main.go. Text frames are tiny by design; audio frames carry
@@ -27,7 +38,7 @@ func runWSText(ctx context.Context, target string, recv chan<- []byte, send <-ch
 	defer close(recv)
 	for ctx.Err() == nil {
 		states <- stConnecting
-		ws, _, err := websocket.Dial(ctx, target, nil)
+		ws, _, err := websocket.Dial(ctx, target, dialOpts())
 		if err != nil {
 			states <- stDown
 			if !sleepCtx(ctx, 2*time.Second) {
@@ -96,7 +107,7 @@ func runWSText(ctx context.Context, target string, recv chan<- []byte, send <-ch
 // socket drives the user-visible "connected/down" state.
 func runWSAudio(ctx context.Context, target string, audio chan<- []byte) {
 	for ctx.Err() == nil {
-		ws, _, err := websocket.Dial(ctx, target, nil)
+		ws, _, err := websocket.Dial(ctx, target, dialOpts())
 		if err != nil {
 			if !sleepCtx(ctx, 2*time.Second) {
 				return

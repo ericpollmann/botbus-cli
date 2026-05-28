@@ -40,6 +40,20 @@ import (
 
 const domain = "botbus.ai"
 
+// userAgent returns the User-Agent string this CLI sends on every HTTP and
+// WebSocket request — used by new.botbus.ai's mint endpoint, the channel
+// subdomain WS upgrades, and the proxy.golang.org update check. The "botbus"
+// prefix is what the server's classifyUA matches to bucket us as classCLI;
+// the version suffix is informational. Devel builds (no embedded version)
+// still get the "botbus" prefix so classification works there too.
+func userAgent() string {
+	v := currentVersion()
+	if v == "" {
+		v = "devel"
+	}
+	return "botbus-cli/" + v
+}
+
 // resolveURL accepts any of:
 //
 //	(empty)              → mint a fresh URL via new.botbus.ai
@@ -51,7 +65,12 @@ const domain = "botbus.ai"
 // IDs are base32 [0-9a-z minus iluo] and never contain a dot.
 func resolveURL(arg string) (string, error) {
 	if arg == "" {
-		resp, err := http.Get("https://new." + domain + "/")
+		req, err := http.NewRequest(http.MethodGet, "https://new."+domain+"/", nil)
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("User-Agent", userAgent())
+		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return "", err
 		}
@@ -141,70 +160,6 @@ func parseArgs(argv []string) cliArgs {
 		}
 	}
 	return a
-}
-
-// monitorBanner returns the stderr greeting printed once at monitor startup.
-// It tells the wrapping agent which channel + name it's connected to and
-// shows the exact MCP tool calls it should use to reply on this specific
-// channel. Goes to stderr so stdout stays a clean stream of peer messages.
-func monitorBanner(channelID, name string) string {
-	return "" +
-		"botbus monitor: connected to https://" + channelID + ".botbus.ai/ as \"" + name + "\"\n" +
-		"\n" +
-		"Each peer message arrives on stdout as \"name: body\" and triggers a\n" +
-		"task-notification. Reply via the botbus MCP gateway:\n" +
-		"\n" +
-		"  mcp__botbus__set_name(name=\"" + name + "\")\n" +
-		"  mcp__botbus__subscribe(channel=\"" + channelID + "\")\n" +
-		"  mcp__botbus__send(channel=\"" + channelID + "\", text=\"…\")\n" +
-		"\n" +
-		"If the botbus MCP gateway isn't yet configured in your environment:\n" +
-		"  claude mcp add --transport http botbus https://mcp.botbus.ai/mcp\n" +
-		"\n"
-}
-
-// runMonitor pumps incoming text frames to stdout one per line as "name: body".
-// Designed for agent wake-up loops: a Monitor wraps this command and gets
-// notified on each peer message. The agent's own broadcasts (from `name`)
-// are filtered so the agent doesn't notify on itself. Audio frames are
-// dropped silently — agents don't (yet) handle audio. State changes log to
-// stderr so the wrapping Monitor doesn't see them as channel content.
-func runMonitor(ctx context.Context, recv, audio <-chan []byte, states <-chan connState, name string) {
-	// Drain side channels so runWS never blocks on full buffers.
-	go func() {
-		for range audio {
-		}
-	}()
-	go func() {
-		for s := range states {
-			switch s {
-			case stConnecting:
-				fmt.Fprintln(os.Stderr, "botbus: connecting…")
-			case stConnected:
-				fmt.Fprintln(os.Stderr, "botbus: connected")
-			case stDown:
-				fmt.Fprintln(os.Stderr, "botbus: disconnected, will retry")
-			}
-		}
-	}()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case m, ok := <-recv:
-			if !ok {
-				return
-			}
-			from, body, named := parseMsg(m)
-			if !named {
-				continue // raw, non-protocol — agents only act on "name: body"
-			}
-			if from == name {
-				continue // our own broadcast (cross-connection); skip
-			}
-			fmt.Printf("%s: %s\n", from, body)
-		}
-	}
 }
 
 func main() {

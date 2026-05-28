@@ -72,6 +72,7 @@ func latestVersion(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	req.Header.Set("User-Agent", userAgent())
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err

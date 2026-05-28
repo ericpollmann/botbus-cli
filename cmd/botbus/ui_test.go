@@ -232,3 +232,17 @@ func TestNameColor(t *testing.T) {
 		t.Errorf("nameColor(\"abc\") = %d, want 6", got)
 	}
 }
+
+// userAgent must always start with "botbus" so the server's classifyUA
+// buckets us as classCLI. The version suffix is best-effort: in test/devel
+// builds debug.ReadBuildInfo returns an empty version, so we should see
+// the explicit "devel" fallback.
+func TestUserAgent(t *testing.T) {
+	ua := userAgent()
+	if !strings.HasPrefix(ua, "botbus-cli/") {
+		t.Errorf("userAgent() = %q, want botbus-cli/ prefix", ua)
+	}
+	if !strings.Contains(strings.ToLower(ua), "botbus") {
+		t.Errorf("userAgent() = %q, must contain 'botbus' for server-side classifyUA to bucket us as CLI", ua)
+	}
+}
