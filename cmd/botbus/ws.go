@@ -26,22 +26,34 @@ const (
 	audioReadLimit = 256 * 1024
 )
 
+// reconnectBackoff is the pause between a dropped connection and the next
+// dial. A var (not const) so tests can shrink it; production stays at 2s.
+var reconnectBackoff = 2 * time.Second
+
 // runWSText keeps a bidirectional text-stream WebSocket alive. It pumps
 // received text frames into recv, drains outgoing user lines from send,
-// and reconnects with 2s backoff on drop. Connection state is reported
-// on states.
+// and reconnects with backoff on drop. Connection state is reported on
+// states.
+//
+// A resume ring persists across reconnects: every received frame is recorded
+// into it, and each (re)dial carries a ?resume=<count>.<hex-fp> token derived
+// from the last K frames seen. The server replays only the gap the client
+// missed instead of dumping the last 40 on every reconnect (see resume.go).
+// The first connect has an empty ring → no token → the server sends recent
+// context, the intended "history on join" behavior.
 //
 // Server excludes the sender's *Conn from broadcasts, so frames we send
 // do not echo back on recv — the UI's local "→ text" line is the only
 // display of our own messages.
 func runWSText(ctx context.Context, target string, recv chan<- []byte, send <-chan []byte, states chan<- connState) {
 	defer close(recv)
+	ring := newFPRing(resumeDefaultK)
 	for ctx.Err() == nil {
 		states <- stConnecting
-		ws, _, err := websocket.Dial(ctx, target, dialOpts())
+		ws, _, err := websocket.Dial(ctx, withResume(target, ring.token()), dialOpts())
 		if err != nil {
 			states <- stDown
-			if !sleepCtx(ctx, 2*time.Second) {
+			if !sleepCtx(ctx, reconnectBackoff) {
 				return
 			}
 			continue
@@ -52,7 +64,7 @@ func runWSText(ctx context.Context, target string, recv chan<- []byte, send <-ch
 		if typ, m, rerr := ws.Read(ctx); rerr != nil || typ != websocket.MessageBinary || string(m) != "ok" {
 			ws.CloseNow()
 			states <- stDown
-			if !sleepCtx(ctx, 2*time.Second) {
+			if !sleepCtx(ctx, reconnectBackoff) {
 				return
 			}
 			continue
@@ -67,6 +79,7 @@ func runWSText(ctx context.Context, target string, recv chan<- []byte, send <-ch
 				if err != nil {
 					return
 				}
+				ring.add(m) // record before forwarding so the next resume token reflects it
 				select {
 				case recv <- m:
 				case <-ctx.Done():
@@ -94,7 +107,7 @@ func runWSText(ctx context.Context, target string, recv chan<- []byte, send <-ch
 		}
 		ws.CloseNow()
 		states <- stDown
-		if !sleepCtx(ctx, 2*time.Second) {
+		if !sleepCtx(ctx, reconnectBackoff) {
 			return
 		}
 	}
@@ -105,11 +118,18 @@ func runWSText(ctx context.Context, target string, recv chan<- []byte, send <-ch
 // Frames go to audio; full buffer drops silently rather than backpressuring.
 // Audio degradation is soft — no state reporting, no banner — the text
 // socket drives the user-visible "connected/down" state.
+//
+// Like the text stream it carries a resume token so a reconnecting listener
+// gets only the audio it missed, not a last-40 burst of stale Opus on every
+// drop. The ring records every wire-received frame (even ones later dropped
+// from the playback channel), so the token tracks the buffer position, not
+// what actually played.
 func runWSAudio(ctx context.Context, target string, audio chan<- []byte) {
+	ring := newFPRing(resumeDefaultK)
 	for ctx.Err() == nil {
-		ws, _, err := websocket.Dial(ctx, target, dialOpts())
+		ws, _, err := websocket.Dial(ctx, withResume(target, ring.token()), dialOpts())
 		if err != nil {
-			if !sleepCtx(ctx, 2*time.Second) {
+			if !sleepCtx(ctx, reconnectBackoff) {
 				return
 			}
 			continue
@@ -118,7 +138,7 @@ func runWSAudio(ctx context.Context, target string, audio chan<- []byte) {
 
 		if typ, m, rerr := ws.Read(ctx); rerr != nil || typ != websocket.MessageBinary || string(m) != "ok" {
 			ws.CloseNow()
-			if !sleepCtx(ctx, 2*time.Second) {
+			if !sleepCtx(ctx, reconnectBackoff) {
 				return
 			}
 			continue
@@ -129,6 +149,7 @@ func runWSAudio(ctx context.Context, target string, audio chan<- []byte) {
 			if err != nil {
 				break
 			}
+			ring.add(m) // record every received frame so the resume token tracks the buffer
 			select {
 			case audio <- m:
 			case <-ctx.Done():
@@ -139,7 +160,7 @@ func runWSAudio(ctx context.Context, target string, audio chan<- []byte) {
 			}
 		}
 		ws.CloseNow()
-		if !sleepCtx(ctx, 2*time.Second) {
+		if !sleepCtx(ctx, reconnectBackoff) {
 			return
 		}
 	}
