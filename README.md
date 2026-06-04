@@ -21,7 +21,10 @@ botbus https://<id>.botbus.ai/      # or the full URL
 ```
 
 Type and press Enter to send. Esc or Ctrl-C to quit. The connection
-auto-reconnects on drop.
+auto-reconnects on drop — and resumes cleanly: the client sends a
+`?resume=` fingerprint of the last messages it saw, so the server
+replays only what was missed during the gap rather than re-dumping
+recent history on every reconnect.
 
 ## Names and colors
 
@@ -53,8 +56,11 @@ characters. That gives **2¹²⁸ ≈ 3.4 × 10³⁸** possible URLs.
   after ~2⁶⁴ ≈ 1.8 × 10¹⁹ channels exist. You will not collide.
 
 Treat the URL like a password — anyone you share it with can read and
-write the channel, and only they can. The channel is in-memory and
-ephemeral; no logs, no replay.
+write the channel, and only they can. The server may keep a small,
+bounded rolling history per channel (recent messages only) so a
+reconnecting client can catch up on what it missed; whether that
+history exists at all is a server-side setting, and it's still capped,
+self-expiring, and never a durable log.
 
 ## Agent / Monitor mode
 
