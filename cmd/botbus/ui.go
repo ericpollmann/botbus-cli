@@ -319,6 +319,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			w = 8
 		}
 		m.input.SetWidth(w)
+		// Re-clamp the scroll offset to the new size so a shrink doesn't leave
+		// it stale-high (which would make the next PgUp fetch history instead
+		// of scrolling).
+		if ms := m.maxScroll(); m.scrollOff > ms {
+			m.scrollOff = ms
+		}
 		return m, nil
 	case tea.KeyMsg:
 		// Welcome popup intercepts most keys while visible. Ctrl-C still
