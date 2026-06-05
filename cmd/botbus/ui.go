@@ -5,6 +5,7 @@ package main
 // visualRows) live in protocol.go.
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -19,7 +20,7 @@ import (
 const (
 	dotTTL       = 5 * time.Minute
 	spinSpeed    = 150 * time.Millisecond
-	quitHint     = "Esc to quit · /me · /dm name"
+	quitHint     = "Esc quit · PgUp history · /me · /dm"
 	maxInputRows = 8
 )
 
@@ -47,6 +48,21 @@ type (
 	stateMsg connState
 	tickMsg  struct{}
 	errMsg   struct{ error }
+	// seedMsg carries the initial /history scrollback (oldest-first frames)
+	// plus the pagination cursor, delivered once by runWSText before the WS
+	// connects (see ws.go). Rendered without touching peer dots — these are
+	// history, not live presence.
+	seedMsg struct {
+		frames [][]byte
+		next   string
+	}
+	// olderMsg carries one older /history page fetched on scroll-back (or a
+	// failure flag so the model can re-enable the fetch on the next scroll).
+	olderMsg struct {
+		frames [][]byte
+		next   string
+		failed bool
+	}
 )
 
 type model struct {
@@ -62,6 +78,13 @@ type model struct {
 	send       chan<- []byte
 	w, h       int
 	welcome    welcomeState
+	// scroll-back state (see PgUp/PgDn handling + the /history pager)
+	scrollOff   int            // visual rows scrolled up from the bottom (0 = newest pinned)
+	histBase    string         // channel HTTP origin, e.g. https://<id>.botbus.ai
+	oldestID    string         // pagination cursor; "" = unknown / start of buffer
+	histLoading bool           // a scroll-back /history fetch is in flight
+	noMoreHist  bool           // reached the start of the buffer
+	seed        <-chan seedMsg // one-shot initial /history scrollback + cursor
 }
 
 // newModel builds the bubbletea model. fresh=true means we just minted this
@@ -70,7 +93,7 @@ type model struct {
 // of the per-channel welcomed marker. fresh=false means the user joined an
 // existing channel; the popup shows once per new-to-this-machine channel,
 // gated by ~/.config/botbus/welcomed/<id>.
-func newModel(host, myName string, fresh bool, recv <-chan []byte, states <-chan connState, send chan<- []byte) model {
+func newModel(host, histBase, myName string, fresh bool, recv <-chan []byte, states <-chan connState, send chan<- []byte, seed <-chan seedMsg) model {
 	// SetPromptFunc renders the user's own colored name on line 0 and an
 	// equal-width blank indent on subsequent lines so multi-line input
 	// aligns nicely under the first line of text.
@@ -107,8 +130,8 @@ func newModel(host, myName string, fresh bool, recv <-chan []byte, states <-chan
 	channelID := channelIDFromHost(host)
 	autoShow := fresh || !isWelcomed(channelID)
 	return model{
-		host: host, myName: myName, state: stConnecting, input: ta,
-		recv: recv, states: states, send: send,
+		host: host, histBase: histBase, myName: myName, state: stConnecting, input: ta,
+		recv: recv, states: states, send: send, seed: seed,
 		seenColors: map[int]time.Time{},
 		welcome:    welcomeState{visible: autoShow, fresh: fresh},
 	}
@@ -124,6 +147,105 @@ func (m *model) appendSpoken(name, body, raw string) {
 		return
 	}
 	m.msgs = append(m.msgs, paletteStyle(color).Render(raw))
+}
+
+// renderHistFrame renders one raw history frame into a scrollback string
+// (slash-aware), WITHOUT touching peer dots — history isn't live presence.
+func renderHistFrame(raw []byte) string {
+	name, body, named := parseMsg(raw)
+	if !named {
+		return string(raw)
+	}
+	color := nameColor(name)
+	if r, ok := renderSlash(name, body, color); ok {
+		return r
+	}
+	return paletteStyle(color).Render(string(raw))
+}
+
+// effWH returns the render width/height with the same fallbacks View uses, so
+// scroll clamping in Update matches what View draws.
+func (m model) effWH() (w, h int) {
+	w, h = m.w, m.h
+	if w < 20 {
+		w = 80
+	}
+	if h < 4 {
+		h = 24
+	}
+	return
+}
+
+// wrappedRows flattens m.msgs into visual rows soft-wrapped at width w.
+func (m model) wrappedRows(w int) []string {
+	wrapStyle := lipgloss.NewStyle().Width(w)
+	var rows []string
+	for _, msg := range m.msgs {
+		rows = append(rows, strings.Split(wrapStyle.Render(msg), "\n")...)
+	}
+	return rows
+}
+
+// rowsOf is how many visual rows one message occupies at width w.
+func rowsOf(msg string, w int) int {
+	return strings.Count(lipgloss.NewStyle().Width(w).Render(msg), "\n") + 1
+}
+
+// msgAreaRows is the scrollback row capacity (height minus bar, input, spacer).
+// Mirrors View's maxLines so clamping and rendering agree.
+func (m model) msgAreaRows() int {
+	_, h := m.effWH()
+	inputLines := strings.Count(m.input.View(), "\n") + 1
+	n := h - 1 - inputLines - 1
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// maxScroll is the largest valid scrollOff (rows hidden above the screenful).
+func (m model) maxScroll() int {
+	w, _ := m.effWH()
+	n := len(m.wrappedRows(w)) - m.msgAreaRows()
+	if n < 0 {
+		n = 0
+	}
+	return n
+}
+
+// scrollBy moves the scrollback ~one page (dir +1 up / -1 down). Scrolling up
+// while already at the top triggers a /history fetch for older messages.
+func (m model) scrollBy(dir int) (tea.Model, tea.Cmd) {
+	ms := m.maxScroll()
+	page := m.msgAreaRows() - 1
+	if page < 1 {
+		page = 1
+	}
+	if dir > 0 {
+		if m.scrollOff >= ms {
+			return m.maybeLoadOlder()
+		}
+		m.scrollOff += page
+		if m.scrollOff > ms {
+			m.scrollOff = ms
+		}
+		return m, nil
+	}
+	m.scrollOff -= page
+	if m.scrollOff < 0 {
+		m.scrollOff = 0
+	}
+	return m, nil
+}
+
+// maybeLoadOlder starts a scroll-back fetch if one isn't running and there's
+// more history (a known cursor, not yet at the buffer start).
+func (m model) maybeLoadOlder() (tea.Model, tea.Cmd) {
+	if m.histLoading || m.noMoreHist || m.oldestID == "" || m.histBase == "" {
+		return m, nil
+	}
+	m.histLoading = true
+	return m, loadOlder(m.histBase, m.oldestID)
 }
 
 func waitRecv(c <-chan []byte) tea.Cmd {
@@ -142,8 +264,37 @@ func tickCmd() tea.Cmd {
 	return tea.Tick(spinSpeed, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
+// waitSeed blocks for the one-shot initial /history scrollback delivered by
+// runWSText (oldest-first frames + pagination cursor). A closed channel
+// yields an empty seed so the model still proceeds. Not re-armed — one-shot.
+func waitSeed(c <-chan seedMsg) tea.Cmd {
+	return func() tea.Msg {
+		if c == nil {
+			return seedMsg{}
+		}
+		s, ok := <-c
+		if !ok {
+			return seedMsg{}
+		}
+		return s
+	}
+}
+
+// loadOlder fetches one older /history page strictly before `before`. The
+// result (olderMsg) is applied in Update; a fetch error sets failed so the
+// model re-enables the fetch on the next scroll.
+func loadOlder(base, before string) tea.Cmd {
+	return func() tea.Msg {
+		p, err := fetchHistory(context.Background(), base, "/history", before, 40)
+		if err != nil {
+			return olderMsg{failed: true}
+		}
+		return olderMsg{frames: histFramesChrono(p), next: p.Next}
+	}
+}
+
 func (m model) Init() tea.Cmd {
-	return tea.Batch(waitRecv(m.recv), waitState(m.states), tea.WindowSize(), tickCmd())
+	return tea.Batch(waitRecv(m.recv), waitState(m.states), waitSeed(m.seed), tea.WindowSize(), tickCmd())
 }
 
 func (m model) publish(text string) tea.Cmd {
@@ -168,6 +319,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			w = 8
 		}
 		m.input.SetWidth(w)
+		// Re-clamp the scroll offset to the new size so a shrink doesn't leave
+		// it stale-high (which would make the next PgUp fetch history instead
+		// of scrolling).
+		if ms := m.maxScroll(); m.scrollOff > ms {
+			m.scrollOff = ms
+		}
 		return m, nil
 	case tea.KeyMsg:
 		// Welcome popup intercepts most keys while visible. Ctrl-C still
@@ -199,6 +356,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "esc", "ctrl+c":
 			return m, tea.Quit
+		case "pgup":
+			return m.scrollBy(+1) // scroll into history; fetches older at the top
+		case "pgdown":
+			return m.scrollBy(-1)
+		case "home":
+			m.scrollOff = m.maxScroll()
+			return m.maybeLoadOlder()
+		case "end":
+			m.scrollOff = 0 // jump back to the newest
+			return m, nil
 		case "enter":
 			text := strings.TrimSpace(m.input.Value())
 			if text == "" {
@@ -207,8 +374,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.Reset()
 			m.input.SetHeight(1)
 			// Show our own line locally exactly as peers will see it
-			// (slash-aware rendering).
+			// (slash-aware rendering), and snap to the bottom so we always
+			// see what we just sent even if we were scrolled up in history.
 			m.appendSpoken(m.myName, text, m.myName+": "+text)
+			m.scrollOff = 0
 			return m, m.publish(text)
 		}
 	case incoming:
@@ -220,7 +389,52 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.msgs = append(m.msgs, text)
 		}
+		// If the user is scrolled up reading history, keep their view anchored
+		// (grow the offset by the new line's rows) rather than yanking them to
+		// the bottom. At the bottom (scrollOff==0) the new line just shows.
+		if m.scrollOff > 0 {
+			w, _ := m.effWH()
+			m.scrollOff += rowsOf(m.msgs[len(m.msgs)-1], w)
+		}
 		return m, waitRecv(m.recv)
+	case seedMsg:
+		// One-shot initial /history scrollback: append oldest-first (these are
+		// the newest ~40, in order) and set the pagination cursor. Stays pinned
+		// to the bottom (scrollOff already 0). Not re-armed.
+		for _, f := range msg.frames {
+			m.msgs = append(m.msgs, renderHistFrame(f))
+		}
+		if msg.next != "" {
+			m.oldestID = msg.next
+		} else if len(msg.frames) > 0 {
+			m.noMoreHist = true // seeded the whole buffer; nothing older
+		}
+		return m, nil
+	case olderMsg:
+		m.histLoading = false
+		if msg.failed {
+			return m, nil // transient — a later scroll retries
+		}
+		if len(msg.frames) == 0 {
+			m.noMoreHist = true
+			return m, nil
+		}
+		w, _ := m.effWH()
+		rendered := make([]string, 0, len(msg.frames))
+		added := 0
+		for _, f := range msg.frames {
+			s := renderHistFrame(f)
+			rendered = append(rendered, s)
+			added += rowsOf(s, w)
+		}
+		m.msgs = append(rendered, m.msgs...) // prepend older messages above
+		m.scrollOff += added                 // keep the viewport anchored on the same content
+		if msg.next != "" {
+			m.oldestID = msg.next
+		} else {
+			m.noMoreHist = true
+		}
+		return m, nil
 	case stateMsg:
 		m.state = connState(msg)
 		return m, waitState(m.states)
@@ -334,29 +548,47 @@ func (m model) View() string {
 	// terminal edge; collect from newest backwards until we've filled
 	// maxLines worth of visual rows. lipgloss.Width(w).Render handles
 	// ANSI-aware soft-wrapping at the right cell column.
+	// Flatten messages to visual rows, then show a maxLines-tall window whose
+	// bottom sits scrollOff rows above the newest. scrollOff==0 pins to the
+	// latest (the default); PgUp raises it to reveal history.
 	wrapStyle := lipgloss.NewStyle().Width(w)
-	var displayed []string
-	totalRows := 0
-	for i := len(m.msgs) - 1; i >= 0; i-- {
-		wrapped := wrapStyle.Render(m.msgs[i])
-		rows := strings.Count(wrapped, "\n") + 1
-		if totalRows+rows > maxLines {
-			break
-		}
-		displayed = append([]string{wrapped}, displayed...)
-		totalRows += rows
+	var rows []string
+	for _, msg := range m.msgs {
+		rows = append(rows, strings.Split(wrapStyle.Render(msg), "\n")...)
 	}
-	for i := totalRows; i < maxLines; i++ {
+	off := m.scrollOff
+	maxOff := len(rows) - maxLines
+	if maxOff < 0 {
+		maxOff = 0
+	}
+	if off > maxOff {
+		off = maxOff
+	}
+	if off < 0 {
+		off = 0
+	}
+	end := len(rows) - off
+	start := end - maxLines
+	if start < 0 {
+		start = 0
+	}
+	window := rows[start:end]
+	for i := len(window); i < maxLines; i++ {
 		b.WriteByte('\n')
 	}
-	for _, line := range displayed {
+	for _, line := range window {
 		b.WriteString(line)
 		b.WriteByte('\n')
 	}
 
-	// Hint sits on the first line of the input, to the right.
+	// Hint sits on the first line of the input, to the right. While scrolled
+	// up, swap in a scrollback hint so the user knows how to get back to live.
+	hintText := quitHint
+	if m.scrollOff > 0 {
+		hintText = "↑ history · End→latest"
+	}
 	lines := strings.Split(inputView, "\n")
-	hint := hintStyle.Render(quitHint)
+	hint := hintStyle.Render(hintText)
 	ipad := w - lipgloss.Width(lines[0]) - lipgloss.Width(hint)
 	if ipad < 1 {
 		ipad = 1

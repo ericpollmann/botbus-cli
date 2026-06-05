@@ -135,7 +135,7 @@ func TestModelWelcomeFreshAutoShows(t *testing.T) {
 	recv := make(chan []byte)
 	states := make(chan connState)
 	send := make(chan []byte)
-	m := newModel(id+".botbus.ai", "me", true, recv, states, send)
+	m := newModel(id+".botbus.ai", "https://"+id+".botbus.ai", "me", true, recv, states, send, nil)
 	if !m.welcome.visible {
 		t.Error("fresh=true should auto-show the welcome popup even when marker exists")
 	}
@@ -156,7 +156,7 @@ func TestModelWelcomeReturningGated(t *testing.T) {
 	send := make(chan []byte)
 
 	// First visit: marker absent → should show.
-	m1 := newModel(id+".botbus.ai", "me", false, recv, states, send)
+	m1 := newModel(id+".botbus.ai", "https://"+id+".botbus.ai", "me", false, recv, states, send, nil)
 	if !m1.welcome.visible {
 		t.Error("first visit (no marker) should auto-show")
 	}
@@ -168,7 +168,7 @@ func TestModelWelcomeReturningGated(t *testing.T) {
 	if err := markWelcomed(id); err != nil {
 		t.Fatal(err)
 	}
-	m2 := newModel(id+".botbus.ai", "me", false, recv, states, send)
+	m2 := newModel(id+".botbus.ai", "https://"+id+".botbus.ai", "me", false, recv, states, send, nil)
 	if m2.welcome.visible {
 		t.Error("second visit (marker present) should not auto-show")
 	}
