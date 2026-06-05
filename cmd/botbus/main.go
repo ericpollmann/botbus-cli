@@ -195,9 +195,15 @@ func main() {
 	audio := make(chan []byte, 8)
 	send := make(chan []byte, 16)
 	states := make(chan connState, 4)
+	// seedCh is buffered so runWSText's one-shot /history seed never blocks —
+	// the TUI model drains it; --monitor mode leaves it unread (and the ring
+	// seed there just suppresses the startup last-40 replay so an agent wrapper
+	// isn't flooded with stale messages).
+	seedCh := make(chan seedMsg, 1)
+	histBase := strings.TrimRight(u, "/") // channel HTTP origin for /history
 	textURL, audioURL := channelStreamURLs(u)
-	go runWSText(ctx, textURL, recv, send, states)
-	go runWSAudio(ctx, audioURL, audio)
+	go runWSText(ctx, textURL, histBase, recv, send, states, seedCh)
+	go runWSAudio(ctx, audioURL, histBase, audio)
 
 	if args.monitor {
 		// Channel ID is the host minus ".botbus.ai" — strip it for display.
@@ -213,7 +219,7 @@ func main() {
 	// the "Your new private channel." copy when fresh and auto-shows
 	// regardless of the per-channel marker file.
 	fresh := args.channel == ""
-	p := tea.NewProgram(newModel(hostFromURL(u), name, fresh, recv, states, send), tea.WithAltScreen())
+	p := tea.NewProgram(newModel(hostFromURL(u), histBase, name, fresh, recv, states, send, seedCh), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

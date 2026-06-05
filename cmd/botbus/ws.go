@@ -45,9 +45,28 @@ var reconnectBackoff = 2 * time.Second
 // Server excludes the sender's *Conn from broadcasts, so frames we send
 // do not echo back on recv — the UI's local "→ text" line is the only
 // display of our own messages.
-func runWSText(ctx context.Context, target string, recv chan<- []byte, send <-chan []byte, states chan<- connState) {
+func runWSText(ctx context.Context, target, histBase string, recv chan<- []byte, send <-chan []byte, states chan<- connState, seedCh chan<- seedMsg) {
 	defer close(recv)
 	ring := newFPRing(resumeDefaultK)
+	// Seed the scrollback + resume ring from /history BEFORE the first connect.
+	// The model renders the seed as initial history (with a pagination cursor),
+	// and the seeded ring makes the first dial carry a resume token so the
+	// server replays only the gap rather than re-pushing these same frames over
+	// the socket. In --monitor mode nothing reads seedCh (it's buffered), but
+	// the ring seed still suppresses the last-40 replay so an agent wrapper
+	// isn't flooded with stale messages on startup. Best-effort: on failure the
+	// ring stays empty and the server replays the last 40 over the WS as usual.
+	if seedCh != nil {
+		if page, err := fetchHistory(ctx, histBase, "/history", "", 40); err == nil {
+			frames := histFramesChrono(page)
+			for _, f := range frames {
+				ring.add(f)
+			}
+			seedCh <- seedMsg{frames: frames, next: page.Next}
+		} else {
+			seedCh <- seedMsg{}
+		}
+	}
 	for ctx.Err() == nil {
 		states <- stConnecting
 		ws, _, err := websocket.Dial(ctx, withResume(target, ring.token()), dialOpts())
@@ -124,8 +143,17 @@ func runWSText(ctx context.Context, target string, recv chan<- []byte, send <-ch
 // drop. The ring records every wire-received frame (even ones later dropped
 // from the playback channel), so the token tracks the buffer position, not
 // what actually played.
-func runWSAudio(ctx context.Context, target string, audio chan<- []byte) {
+func runWSAudio(ctx context.Context, target, histBase string, audio chan<- []byte) {
 	ring := newFPRing(resumeDefaultK)
+	// Seed the audio ring from /audio/history before the first connect so the
+	// first dial carries a resume token and the server doesn't replay the last
+	// ~40 audio frames as a burst of stale Opus on startup. Best-effort; no
+	// rendering — audio history is for the resume token only, not playback.
+	if page, err := fetchHistory(ctx, histBase, "/audio/history", "", resumeDefaultK); err == nil {
+		for _, f := range histFramesChrono(page) {
+			ring.add(f)
+		}
+	}
 	for ctx.Err() == nil {
 		ws, _, err := websocket.Dial(ctx, withResume(target, ring.token()), dialOpts())
 		if err != nil {

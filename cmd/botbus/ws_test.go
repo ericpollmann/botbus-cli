@@ -64,7 +64,7 @@ func TestRunWSTextSendsResumeOnReconnect(t *testing.T) {
 	go drainStates(states)
 	go drainBytes(recv)
 	workerDone := make(chan struct{})
-	go func() { runWSText(ctx, target, recv, send, states); close(workerDone) }()
+	go func() { runWSText(ctx, target, "", recv, send, states, make(chan seedMsg, 1)); close(workerDone) }()
 
 	// First dial: fresh ring → no resume token.
 	if first := recvString(t, resumes); first != "" {
@@ -95,7 +95,7 @@ func TestRunWSAudioSendsResumeOnReconnect(t *testing.T) {
 	audio := make(chan []byte, 8)
 	go drainBytes(audio)
 	workerDone := make(chan struct{})
-	go func() { runWSAudio(ctx, target, audio); close(workerDone) }()
+	go func() { runWSAudio(ctx, target, "", audio); close(workerDone) }()
 
 	if first := recvString(t, resumes); first != "" {
 		t.Errorf("first audio connect should carry no resume token, got %q", first)
