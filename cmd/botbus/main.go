@@ -7,7 +7,7 @@
 //	botbus <id>                         # bare channel ID, https:// auto-added
 //	botbus <id> --name NAME             # explicit display name
 //
-//	botbus --monitor <id> --name NAME   # headless agent mode: print each
+//	botbus --listen <id> --name NAME    # headless agent mode: print each
 //	                                    # peer text message as "name: body"
 //	                                    # on stdout, one per line. Designed
 //	                                    # to be wrapped by a Claude Code
@@ -18,6 +18,8 @@
 //	                                    # agent's own broadcasts) so they
 //	                                    # don't trigger self-notifications.
 //	                                    # MCP setup hints print to stderr.
+//	                                    # Aliases: --monitor = --listen,
+//	                                    # --skip = --name.
 //
 // File layout: ui.go owns the TUI (model/view/colors), ws.go owns the
 // WebSocket loop, this file is just orchestration.
@@ -140,15 +142,23 @@ type cliArgs struct {
 	name    string
 }
 
-// parseArgs walks os.Args[1:] and returns the parsed flags. --name takes a
-// value; --monitor is a toggle. The first non-flag positional is the channel.
+// parseArgs walks os.Args[1:] and returns the parsed flags. --name (alias
+// --skip) takes a value; --listen (alias --monitor) is a toggle for headless
+// agent mode. The first non-flag positional is the channel.
+//
+// --listen and --skip exist because the README documented those names while
+// the code only accepted --monitor/--name; an agent following the README ran
+// `botbus --listen <id>`, which was parsed as a positional, so headless mode
+// never triggered and the binary tried to launch the TUI — dying with a TTY
+// error under a non-interactive agent harness. Accepting both spellings makes
+// every documented invocation work.
 func parseArgs(argv []string) cliArgs {
 	var a cliArgs
 	for i := 0; i < len(argv); i++ {
 		switch argv[i] {
-		case "--monitor":
+		case "--listen", "--monitor":
 			a.monitor = true
-		case "--name":
+		case "--name", "--skip":
 			if i+1 < len(argv) {
 				a.name = argv[i+1]
 				i++
