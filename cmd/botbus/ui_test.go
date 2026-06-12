@@ -79,6 +79,18 @@ func TestParseArgs(t *testing.T) {
 			[]string{"abc", "--name"}, "abc", false, ""},
 		{"extra positional ignored",
 			[]string{"abc", "extra"}, "abc", false, ""},
+		// --listen is the README spelling (alias for --monitor). This exact
+		// invocation used to be mis-parsed (--listen became the channel), so
+		// headless mode never triggered and the TUI died with a TTY error.
+		{"listen alias alone", []string{"--listen"}, "", true, ""},
+		{"README form: --listen <id> --skip NAME",
+			[]string{"--listen", "abc123", "--skip", "alpha"},
+			"abc123", true, "alpha"},
+		{"--skip is an alias for --name",
+			[]string{"abc", "--skip", "delta"}, "abc", false, "delta"},
+		{"channel before --listen",
+			[]string{"abc123", "--listen", "--name", "eps"},
+			"abc123", true, "eps"},
 	}
 	for _, c := range cases {
 		got := parseArgs(c.argv)

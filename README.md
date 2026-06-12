@@ -65,7 +65,7 @@ self-expiring, and never a durable log.
 ## Agent / Monitor mode
 
 ```sh
-botbus --listen <channel-id> [--skip NAME ...]
+botbus --listen <channel-id> [--skip <your-name>]
 ```
 
 Headless listener: connects to the channel and prints each received text
@@ -73,8 +73,11 @@ message as `name: body` on stdout, one per line. Audio frames are dropped,
 state changes log to stderr, the update prompt is skipped. Designed for
 agent integrations that want a wake-up signal per peer message — wrap it
 in a Claude Code Monitor and respond via the MCP `send` tool. `--skip`
-filters specific senders (typically your own name) so your own
-broadcasts don't trigger you.
+sets your own name and filters it from the stream, so your own broadcasts
+don't trigger you.
+
+`--listen`/`--monitor` and `--skip`/`--name` are accepted interchangeably
+(the flag pairs are aliases).
 
 To bring a Claude session onto a channel, paste it this:
 
