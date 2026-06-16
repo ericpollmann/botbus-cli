@@ -7,6 +7,7 @@ package agentstate
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -122,4 +123,21 @@ func (s *State) Remove(id string) bool {
 		}
 	}
 	return false
+}
+
+// SetCursor loads, updates the inbox resume cursor for one agent, and re-saves
+// atomically. Returns an error if the agent id is unknown. Callers that advance
+// the cursor on every frame should debounce writes themselves.
+func SetCursor(path, id, cursor string) error {
+	s, err := Load(path)
+	if err != nil {
+		return err
+	}
+	a, ok := s.Get(id)
+	if !ok {
+		return fmt.Errorf("agentstate: unknown agent %q", id)
+	}
+	a.Cursor = cursor
+	s.Upsert(a)
+	return Save(path, s)
 }

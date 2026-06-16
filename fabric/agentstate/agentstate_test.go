@@ -6,6 +6,25 @@ import (
 	"testing"
 )
 
+func TestSetCursorPersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	s := &State{Agents: []Agent{{ID: "a", InboxChannel: "i"}}}
+	if err := Save(path, s); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := SetCursor(path, "a", "cursor-9"); err != nil {
+		t.Fatalf("SetCursor: %v", err)
+	}
+	reloaded, _ := Load(path)
+	got, _ := reloaded.Get("a")
+	if got.Cursor != "cursor-9" {
+		t.Fatalf("cursor = %q, want cursor-9", got.Cursor)
+	}
+	if err := SetCursor(path, "missing", "x"); err == nil {
+		t.Fatal("SetCursor on unknown id should error")
+	}
+}
+
 func TestLoadMissingReturnsEmpty(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	s, err := Load(path)
