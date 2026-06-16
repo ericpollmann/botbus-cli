@@ -178,6 +178,11 @@ func main() {
 		agentCmd(os.Args[2:])
 		return
 	}
+	// The multiplexing host daemon (inbox delivery + localhost MCP per agent).
+	if len(os.Args) > 1 && os.Args[1] == "daemon" {
+		daemonCmd(os.Args[2:])
+		return
+	}
 
 	args := parseArgs(os.Args[1:])
 
