@@ -108,16 +108,49 @@ URL all work. The gateway calls hub methods directly (no second WS hop),
 and `send` excludes the agent's own subscription from broadcasts so
 `next()` doesn't echo its own messages back.
 
+## Routing fabric: agent management
+
+The botbus **routing fabric** turns the firehose into an addressed mesh: a
+server-side router delivers each message only to the agents that care, and
+local agents subscribe to a private inbox channel instead of the shared
+firehose. The wire contract is the open [`botbus-proto`](https://github.com/ericpollmann/botbus-proto)
+module; the router itself runs alongside the hub.
+
+`botbus agent` manages this host's fabric identities:
+
+```sh
+botbus agent create --name myth-compiler --focus "packages/compile" [--mode session|spawn]
+botbus agent list
+botbus agent remove --name myth-compiler
+```
+
+`create` mints a capability key and a private inbox channel, stores them in the
+local state file (`~/.botbus/state.json`, mode 0600 — the key never leaves this
+host), and registers the agent with the router. Configuration via environment:
+
+- `ROUTER_URL` — router control API (default `http://127.0.0.1:8090`)
+- `HUB_BASE` / `HUB_DOMAIN` — hub origin / apex (default `https://botbus.ai` / `botbus.ai`)
+- `BOTBUS_STATE` — override the state-file path
+
+This is the client side of the fabric; it needs a router exposing the control
+API to register against. The daemon (multiplexed delivery + local MCP) builds on
+this.
+
 ## Layout
 
 ```
-cmd/botbus/        TUI chat client + headless listener
+cmd/botbus/        TUI chat client + headless listener + agent subcommands
 ├── main.go        arg parsing, listen-mode pump, runWS wiring, tea bootstrap
+├── agent.go       `botbus agent create|list|remove` subcommands
 ├── ui.go          bubbletea model + view + palette + slash commands
 ├── ws.go          text + audio WebSocket read/send loops with auto-reconnect
 ├── audio.go       /audio stream frame playback (ffplay/mpv/mplayer/afplay)
 ├── updater.go     self-update check against proxy.golang.org
 └── *_test.go      unit tests
+fabric/            routing-fabric host side (imports botbus-proto)
+├── agentstate/    durable local state file (identity, keys, cursors)
+├── control/       HTTP client for the router control API
+└── hostagent/     agent create/list/remove lifecycle
 ```
 
 ## License
