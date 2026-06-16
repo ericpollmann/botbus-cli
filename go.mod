@@ -9,6 +9,7 @@ require (
 	github.com/coder/websocket v1.8.13
 	github.com/ericpollmann/botbus-proto v0.2.0
 	github.com/mark3labs/mcp-go v0.54.0
+	golang.org/x/sync v0.21.0
 )
 
 require (

@@ -16,9 +16,11 @@ import (
 
 // Daemon holds host-wide connection config shared by all local agents.
 type Daemon struct {
-	RouterURL string `json:"router_url"`
-	HubBase   string `json:"hub_base"`
-	HubDomain string `json:"hub_domain"`
+	RouterURL       string `json:"router_url"`
+	HubBase         string `json:"hub_base"`
+	HubDomain       string `json:"hub_domain"`
+	OutboundChannel string `json:"outbound_channel,omitempty"` // source channel `send` publishes to
+	MCPAddr         string `json:"mcp_addr,omitempty"`         // localhost MCP listen addr (default 127.0.0.1:8765)
 }
 
 // Agent is one locally-managed fabric participant. Key and Cursor are secrets/

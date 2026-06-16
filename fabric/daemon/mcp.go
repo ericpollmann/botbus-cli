@@ -18,9 +18,10 @@ type agentMCP struct {
 	from     string
 }
 
-// buildAgentHandler returns a streamable-HTTP MCP handler exposing next/send
-// for one agent.
-func buildAgentHandler(ag *agentMCP) http.Handler {
+// buildMCPServer registers the next/send tools for one agent and returns the
+// MCP server (so callers can wrap it in a streamable handler with a chosen
+// endpoint path).
+func buildMCPServer(ag *agentMCP) *server.MCPServer {
 	s := server.NewMCPServer("botbus-daemon", "0.1.0", server.WithToolCapabilities(false))
 	s.AddTool(mcp.NewTool("next",
 		mcp.WithDescription("Long-poll this agent's inbox; returns a JSON array of envelopes (possibly empty on timeout)."),
@@ -33,7 +34,13 @@ func buildAgentHandler(ag *agentMCP) http.Handler {
 		mcp.WithString("kind", mcp.Description("chat|dm|task|escalate|status|review_request; default chat.")),
 		mcp.WithString("subject", mcp.Description("Optional short summary.")),
 	), ag.toolSend)
-	return server.NewStreamableHTTPServer(s)
+	return s
+}
+
+// buildAgentHandler returns a streamable-HTTP MCP handler exposing next/send
+// for one agent (default endpoint path).
+func buildAgentHandler(ag *agentMCP) http.Handler {
+	return server.NewStreamableHTTPServer(buildMCPServer(ag))
 }
 
 func (ag *agentMCP) toolNext(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
