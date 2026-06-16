@@ -24,9 +24,11 @@ type Deps struct {
 	MintKey   func() string
 }
 
-// CreateOpts are the user-supplied fields for a new agent.
+// CreateOpts are the user-supplied fields for a new agent. Name is the human
+// handle used for @mention/to: addressing; the opaque registration id is minted
+// by the router, not chosen here.
 type CreateOpts struct {
-	ID        string
+	Name      string
 	Focus     string
 	Mode      string
 	Parent    string
@@ -44,8 +46,8 @@ const (
 // registers it with the router. It is idempotent at the registry (re-register
 // replays desired state) but refuses to clobber an existing local entry.
 func Create(ctx context.Context, d Deps, o CreateOpts) (agentstate.Agent, error) {
-	if o.ID == "" {
-		return agentstate.Agent{}, fmt.Errorf("agent id is required")
+	if o.Name == "" {
+		return agentstate.Agent{}, fmt.Errorf("agent name is required")
 	}
 	if o.Mode == "" {
 		o.Mode = "session"
@@ -55,19 +57,27 @@ func Create(ctx context.Context, d Deps, o CreateOpts) (agentstate.Agent, error)
 	if err != nil {
 		return agentstate.Agent{}, fmt.Errorf("load state: %w", err)
 	}
-	if _, exists := s.Get(o.ID); exists {
-		return agentstate.Agent{}, fmt.Errorf("agent %q already exists locally", o.ID)
+	for _, ex := range s.Agents {
+		if ex.Name == o.Name {
+			return agentstate.Agent{}, fmt.Errorf("agent named %q already exists locally", o.Name)
+		}
 	}
 
+	// The router mints the opaque, unguessable registration id (signed with the
+	// deployment secret); the human name is only an addressing alias.
+	id, err := d.Control.Mint(ctx)
+	if err != nil {
+		return agentstate.Agent{}, fmt.Errorf("mint agent id: %w", err)
+	}
 	inbox, err := d.Hub.MintChannel(ctx)
 	if err != nil {
 		return agentstate.Agent{}, fmt.Errorf("mint inbox channel: %w", err)
 	}
 
 	a := agentstate.Agent{
-		ID:           o.ID,
+		ID:           id,
 		Key:          d.MintKey(),
-		Name:         o.ID,
+		Name:         o.Name,
 		InboxChannel: inbox,
 		Focus:        o.Focus,
 		Parent:       o.Parent,

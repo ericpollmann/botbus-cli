@@ -54,6 +54,35 @@ func (c *Client) Heartbeat(ctx context.Context, id, key string) error {
 	return c.do(req, http.StatusNoContent)
 }
 
+// Mint asks the router for a fresh, unguessable agent id. The router signs it
+// with the deployment secret so it can't be forged or guessed; it's worthless
+// until Register binds it to a capability key.
+func (c *Client) Mint(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/v1/mint", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return "", fmt.Errorf("control mint: status %d: %s", resp.StatusCode, bytes.TrimSpace(msg))
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if out.ID == "" {
+		return "", fmt.Errorf("control mint: empty id")
+	}
+	return out.ID, nil
+}
+
 func (c *Client) do(req *http.Request, want int) error {
 	resp, err := c.hc.Do(req)
 	if err != nil {
