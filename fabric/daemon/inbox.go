@@ -31,16 +31,29 @@ func runInbox(ctx context.Context, rt *AgentRuntime, hub hubclient.HubClient, in
 			}
 			continue
 		}
-		for fr := range frames {
-			for _, inner := range unwrap(fr.Body) {
-				rt.enqueue(inner)
-			}
-			if fr.Resume != "" {
-				cursor = fr.Resume
-				persist(cursor)
+		// Read frames until the stream closes (disconnect) or ctx is cancelled.
+		// Selecting on ctx.Done means cancellation is prompt even if the hub
+		// client's channel doesn't close on its own.
+		disconnected := false
+		for !disconnected {
+			select {
+			case <-ctx.Done():
+				return
+			case fr, ok := <-frames:
+				if !ok {
+					disconnected = true
+					break
+				}
+				for _, inner := range unwrap(fr.Body) {
+					rt.enqueue(inner)
+				}
+				if fr.Resume != "" {
+					cursor = fr.Resume
+					persist(cursor)
+				}
 			}
 		}
-		// Channel closed (disconnect) — back off and resume from cursor.
+		// Disconnected — back off and resume from cursor.
 		if !sleepCtx(ctx, reconnectBackoff) {
 			return
 		}
