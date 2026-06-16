@@ -7,6 +7,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/coder/websocket v1.8.13
+	github.com/ericpollmann/botbus-proto v0.2.0
 )
 
 require (

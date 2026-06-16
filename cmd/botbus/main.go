@@ -173,6 +173,12 @@ func parseArgs(argv []string) cliArgs {
 }
 
 func main() {
+	// Routing-fabric agent management is a distinct mode from the chat TUI.
+	if len(os.Args) > 1 && os.Args[1] == "agent" {
+		agentCmd(os.Args[2:])
+		return
+	}
+
 	args := parseArgs(os.Args[1:])
 
 	// Resolve the user's display name: explicit --name beats env beats default.
