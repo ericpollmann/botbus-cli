@@ -45,20 +45,20 @@ func agentCmd(args []string) {
 	switch args[0] {
 	case "create":
 		fs := flag.NewFlagSet("agent create", flag.ExitOnError)
-		id := fs.String("name", "", "agent id / addressable handle (required)")
+		name := fs.String("name", "", "agent name / addressable handle (required)")
 		focus := fs.String("focus", "", "platform focus-area description")
 		mode := fs.String("mode", "session", "delivery mode: session|spawn")
-		parent := fs.String("parent", "", "escalation target agent id")
+		parent := fs.String("parent", "", "escalation target agent name")
 		tier := fs.String("tier", "", "model tier label (opus|sonnet|haiku|fable)")
 		_ = fs.Parse(args[1:])
 		a, err := hostagent.Create(ctx, realDeps(), hostagent.CreateOpts{
-			ID: *id, Focus: *focus, Mode: *mode, Parent: *parent, ModelTier: *tier,
+			Name: *name, Focus: *focus, Mode: *mode, Parent: *parent, ModelTier: *tier,
 		})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "create:", err)
 			os.Exit(1)
 		}
-		fmt.Printf("created agent %q\n  inbox channel: %s\n  mode: %s\n", a.ID, a.InboxChannel, a.Mode)
+		fmt.Printf("created agent %q\n  id: %s\n  inbox channel: %s\n  mode: %s\n", a.Name, a.ID, a.InboxChannel, a.Mode)
 		fmt.Println("  key stored in", agentstate.DefaultPath())
 	case "list":
 		agents, err := hostagent.List(agentstate.DefaultPath())
@@ -67,20 +67,36 @@ func agentCmd(args []string) {
 			os.Exit(1)
 		}
 		tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-		fmt.Fprintln(tw, "ID\tMODE\tINBOX\tFOCUS")
+		fmt.Fprintln(tw, "NAME\tMODE\tINBOX\tFOCUS")
 		for _, a := range agents {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a.ID, a.Mode, a.InboxChannel, a.Focus)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a.Name, a.Mode, a.InboxChannel, a.Focus)
 		}
 		tw.Flush()
 	case "remove":
 		fs := flag.NewFlagSet("agent remove", flag.ExitOnError)
-		id := fs.String("name", "", "agent id to remove (required)")
+		name := fs.String("name", "", "agent name to remove (required)")
 		_ = fs.Parse(args[1:])
-		if err := hostagent.Remove(agentstate.DefaultPath(), *id); err != nil {
+		agents, err := hostagent.List(agentstate.DefaultPath())
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "remove:", err)
 			os.Exit(1)
 		}
-		fmt.Printf("removed agent %q from local state\n", *id)
+		var id string
+		for _, a := range agents {
+			if a.Name == *name {
+				id = a.ID
+				break
+			}
+		}
+		if id == "" {
+			fmt.Fprintln(os.Stderr, "remove: no local agent named", *name)
+			os.Exit(1)
+		}
+		if err := hostagent.Remove(agentstate.DefaultPath(), id); err != nil {
+			fmt.Fprintln(os.Stderr, "remove:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("removed agent %q from local state\n", *name)
 	default:
 		agentUsage()
 		os.Exit(2)

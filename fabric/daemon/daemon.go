@@ -40,7 +40,7 @@ func (d *Daemon) mux() *http.ServeMux {
 	m := http.NewServeMux()
 	for _, a := range d.state.Agents {
 		path := "/a/" + a.Key
-		ag := &agentMCP{rt: d.runtimes[a.ID], hub: d.hub, outbound: d.state.Daemon.OutboundChannel, from: a.ID}
+		ag := &agentMCP{rt: d.runtimes[a.ID], hub: d.hub, outbound: d.state.Daemon.OutboundChannel, from: a.Name}
 		s := buildMCPServer(ag)
 		m.Handle(path, server.NewStreamableHTTPServer(s, server.WithEndpointPath(path)))
 	}

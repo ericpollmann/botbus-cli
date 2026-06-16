@@ -2,9 +2,12 @@ package hostagent
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
@@ -12,12 +15,16 @@ import (
 	"github.com/ericpollmann/botbus-proto/hubclient"
 )
 
-// stubControl accepts any Bearer-authenticated register/heartbeat. The real
-// auth + persistence is exercised in the private router's tests; here we only
-// need the client round-trip to succeed.
+// stubControl mints a fresh id per call and accepts any Bearer-authenticated
+// register/heartbeat. The real auth + HMAC id validation is exercised in the
+// private router's tests; here we only need the client round-trips to succeed.
 func stubControl(t *testing.T) *control.Client {
 	t.Helper()
+	var n atomic.Int64
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/mint", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": fmt.Sprintf("minted-%d", n.Add(1))})
+	})
 	mux.HandleFunc("PUT /v1/agents/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") == "" {
 			http.Error(w, "no auth", http.StatusUnauthorized)
@@ -42,7 +49,7 @@ func TestCreateMintsRegistersAndPersists(t *testing.T) {
 		StatePath: statePath,
 		MintKey:   func() string { return "key-fixed" },
 	}
-	a, err := Create(ctx, deps, CreateOpts{ID: "myth-compiler", Focus: "packages/compile", Mode: "session"})
+	a, err := Create(ctx, deps, CreateOpts{Name: "myth-compiler", Focus: "packages/compile", Mode: "session"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -52,14 +59,21 @@ func TestCreateMintsRegistersAndPersists(t *testing.T) {
 	if a.Key != "key-fixed" {
 		t.Fatalf("key = %q, want key-fixed", a.Key)
 	}
+	// id is the router-minted opaque token, NOT the human name.
+	if a.ID == "" || a.ID == "myth-compiler" {
+		t.Fatalf("id should be a minted opaque token, got %q", a.ID)
+	}
+	if a.Name != "myth-compiler" {
+		t.Fatalf("name = %q, want myth-compiler", a.Name)
+	}
 
 	s, _ := agentstate.Load(statePath)
-	if got, ok := s.Get("myth-compiler"); !ok || got.InboxChannel != a.InboxChannel || got.Focus != "packages/compile" {
+	if got, ok := s.Get(a.ID); !ok || got.Name != "myth-compiler" || got.InboxChannel != a.InboxChannel || got.Focus != "packages/compile" {
 		t.Fatalf("agent not persisted correctly: %+v ok=%v", got, ok)
 	}
 }
 
-func TestCreateRejectsDuplicateID(t *testing.T) {
+func TestCreateRejectsDuplicateName(t *testing.T) {
 	ctx := context.Background()
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	deps := Deps{
@@ -68,23 +82,23 @@ func TestCreateRejectsDuplicateID(t *testing.T) {
 		StatePath: statePath,
 		MintKey:   func() string { return "key-fixed" },
 	}
-	if _, err := Create(ctx, deps, CreateOpts{ID: "dup"}); err != nil {
+	if _, err := Create(ctx, deps, CreateOpts{Name: "dup"}); err != nil {
 		t.Fatalf("first create: %v", err)
 	}
-	if _, err := Create(ctx, deps, CreateOpts{ID: "dup"}); err == nil {
-		t.Fatal("expected duplicate-id error")
+	if _, err := Create(ctx, deps, CreateOpts{Name: "dup"}); err == nil {
+		t.Fatal("expected duplicate-name error")
 	}
 }
 
-func TestCreateRequiresID(t *testing.T) {
+func TestCreateRequiresName(t *testing.T) {
 	deps := Deps{
 		Hub:       hubclient.NewFake(),
 		Control:   stubControl(t),
 		StatePath: filepath.Join(t.TempDir(), "state.json"),
 		MintKey:   func() string { return "k" },
 	}
-	if _, err := Create(context.Background(), deps, CreateOpts{ID: ""}); err == nil {
-		t.Fatal("expected error for empty id")
+	if _, err := Create(context.Background(), deps, CreateOpts{Name: ""}); err == nil {
+		t.Fatal("expected error for empty name")
 	}
 }
 
