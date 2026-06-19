@@ -9,6 +9,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ericpollmann/botbus-proto/wire"
@@ -29,6 +30,21 @@ type rosterModel struct {
 
 func newRosterModel(nodes []wire.AgentNode) rosterModel {
 	return rosterModel{nodes: nodes}
+}
+
+// newConsoleModel builds a console rooted in roster mode. It initializes the
+// same maps/fields newModel does that the chat path relies on (the seenColors
+// map and the input textarea), so dipping into chat mode doesn't hit a nil map
+// or a zero-value textarea. The real WS channels + name are bound on dip-in
+// (Task 6); here startChat/stopChat stay nil unless injected by a test.
+func newConsoleModel(nodes []wire.AgentNode) model {
+	return model{
+		mode:       modeRoster,
+		roster:     newRosterModel(nodes),
+		state:      stConnecting,
+		input:      newChatInput(""),
+		seenColors: map[int]time.Time{},
+	}
 }
 
 func (m rosterModel) selected() wire.AgentNode {

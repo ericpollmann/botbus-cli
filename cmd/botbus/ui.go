@@ -85,6 +85,14 @@ type model struct {
 	histLoading bool           // a scroll-back /history fetch is in flight
 	noMoreHist  bool           // reached the start of the buffer
 	seed        <-chan seedMsg // one-shot initial /history scrollback + cursor
+	// Console mode: when rooted via newConsoleModel the model carries a roster
+	// sub-view and toggles between it and the chat view. startChat/stopChat are
+	// injectable lifecycle hooks (real WS wiring lands in Task 6; nil in the
+	// direct single-channel chat path from newModel).
+	mode      viewMode
+	roster    rosterModel
+	startChat func(channel string) // starts a WS to channel (real impl in Task 6)
+	stopChat  func()               // cancels the active chat WS (real impl in Task 6)
 }
 
 // newModel builds the bubbletea model. fresh=true means we just minted this
@@ -93,7 +101,10 @@ type model struct {
 // of the per-channel welcomed marker. fresh=false means the user joined an
 // existing channel; the popup shows once per new-to-this-machine channel,
 // gated by ~/.config/botbus/welcomed/<id>.
-func newModel(host, histBase, myName string, fresh bool, recv <-chan []byte, states <-chan connState, send chan<- []byte, seed <-chan seedMsg) model {
+// newChatInput builds the chat textarea with the speaker's colored-name prompt.
+// Shared by newModel (direct chat) and newConsoleModel (console chat dip), so
+// both paths get an identical, non-nil input field.
+func newChatInput(myName string) textarea.Model {
 	// SetPromptFunc renders the user's own colored name on line 0 and an
 	// equal-width blank indent on subsequent lines so multi-line input
 	// aligns nicely under the first line of text.
@@ -121,6 +132,11 @@ func newModel(host, histBase, myName string, fresh bool, recv <-chan []byte, sta
 		return indent
 	})
 	ta.Focus()
+	return ta
+}
+
+func newModel(host, histBase, myName string, fresh bool, recv <-chan []byte, states <-chan connState, send chan<- []byte, seed <-chan seedMsg) model {
+	ta := newChatInput(myName)
 	// Auto-show the welcome popup on fresh mint OR on first visit to a
 	// previously-unseen channel. The per-channel marker file gates the
 	// second case so re-launching against a known channel doesn't pop the
@@ -134,6 +150,10 @@ func newModel(host, histBase, myName string, fresh bool, recv <-chan []byte, sta
 		recv: recv, states: states, send: send, seed: seed,
 		seenColors: map[int]time.Time{},
 		welcome:    welcomeState{visible: autoShow, fresh: fresh},
+		// Direct single-channel chat (botbus <channel>): run in chat mode so the
+		// mode zero-value (modeRoster) doesn't divert the existing entrypoint
+		// into a roster view. The console roots in roster mode via newConsoleModel.
+		mode: modeChat,
 	}
 }
 
@@ -311,6 +331,39 @@ func (m model) publish(text string) tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Console mode switch (Task 5). In roster mode the roster sub-view owns
+	// navigation; enter dips into the selected agent's inbox channel (starting
+	// the chat via the injected hook) and switches to chat mode. esc quits.
+	// In chat mode, esc tears the chat down and returns to the roster instead
+	// of quitting; everything else falls through to the chat Update below.
+	if m.mode == modeRoster {
+		if k, ok := msg.(tea.KeyMsg); ok && (k.String() == "esc" || k.String() == "ctrl+c") {
+			return m, tea.Quit
+		}
+		r, dip := m.roster.updateRoster(msg)
+		m.roster = r
+		if dip {
+			sel := m.roster.selected()
+			if sel.InboxChannel != "" && m.startChat != nil {
+				m.startChat(sel.InboxChannel)
+			}
+			m.mode = modeChat
+		}
+		return m, nil
+	}
+	// mode == modeChat: esc returns to the roster instead of quitting (ctrl+c
+	// still quits, handled in the chat key switch below). Only meaningful when
+	// the model was rooted as a console — a direct chat model has no roster to
+	// return to, but its esc-quits behavior is unchanged because such a model
+	// is never in roster mode and its roster is empty (selecting nothing).
+	if k, ok := msg.(tea.KeyMsg); ok && !m.welcome.visible && k.String() == "esc" && m.stopChat != nil {
+		m.stopChat()
+		m.mode = modeRoster
+		// Clear the chat scrollback so the next dip starts fresh.
+		m.msgs = nil
+		m.scrollOff = 0
+		return m, nil
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
@@ -499,6 +552,11 @@ func (m model) renderDots() string {
 }
 
 func (m model) View() string {
+	// Console roster mode renders the agent tree; chat mode falls through to
+	// the existing chat view below.
+	if m.mode == modeRoster {
+		return m.roster.View()
+	}
 	h, w := m.h, m.w
 	if h < 4 {
 		h = 24
