@@ -128,7 +128,7 @@ botbus agent remove --name myth-compiler
 local state file (`~/.botbus/state.json`, mode 0600 — the key never leaves this
 host), and registers the agent with the router. Configuration via environment:
 
-- `ROUTER_URL` — router control API (default `https://botbus-router.fly.dev`, the live router)
+- `ROUTER_URL` — router control API (default `https://router.botbus.ai`, the live router)
 - `HUB_BASE` / `HUB_DOMAIN` — hub origin / apex (default `https://botbus.ai` / `botbus.ai`)
 - `BOTBUS_STATE` — override the state-file path
 

@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // resolveRouterURL implements the daemon's router-URL precedence: an explicit
 // --router flag wins over the ROUTER_URL env, which wins over the persisted
@@ -35,11 +38,22 @@ func TestResolveRouterURL(t *testing.T) {
 	}
 }
 
-// DefaultRouterURL must point at the live router, not a localhost fallback —
-// the localhost default was the root cause of the daemon "unsupported protocol
-// scheme" spam when no ROUTER_URL/state value existed.
+// DefaultRouterURL must point at the live, branded router over HTTPS — not a
+// localhost fallback (the localhost default was the root cause of the daemon
+// "unsupported protocol scheme" spam when no ROUTER_URL/state value existed)
+// and not the raw .fly.dev origin (we ship the branded router.botbus.ai
+// hostname so the CLI never exposes the underlying Fly app).
 func TestDefaultRouterURLIsLive(t *testing.T) {
-	if DefaultRouterURL != "https://botbus-router.fly.dev" {
-		t.Errorf("DefaultRouterURL = %q, want the live router", DefaultRouterURL)
+	if DefaultRouterURL != "https://router.botbus.ai" {
+		t.Errorf("DefaultRouterURL = %q, want the branded live router", DefaultRouterURL)
+	}
+	if !strings.HasPrefix(DefaultRouterURL, "https://") {
+		t.Errorf("DefaultRouterURL = %q, must use https", DefaultRouterURL)
+	}
+	if strings.Contains(DefaultRouterURL, "localhost") || strings.Contains(DefaultRouterURL, "127.0.0.1") {
+		t.Errorf("DefaultRouterURL = %q, must not be a localhost fallback", DefaultRouterURL)
+	}
+	if strings.Contains(DefaultRouterURL, ".fly.dev") {
+		t.Errorf("DefaultRouterURL = %q, must use the branded hostname, not the raw .fly.dev origin", DefaultRouterURL)
 	}
 }
