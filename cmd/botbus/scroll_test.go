@@ -98,7 +98,7 @@ func TestOlderMsgFailedReenablesFetch(t *testing.T) {
 func TestIncomingAnchorsWhenScrolledUp(t *testing.T) {
 	m := newScrollTestModel(t)
 	m.scrollOff = 3
-	m, _ = upd(m, incoming([]byte("z: hello")))
+	m, _ = upd(m, incoming{data: []byte("z: hello")})
 	if m.scrollOff != 4 {
 		t.Errorf("scrollOff = %d, want 4 (anchored: +1 row for the new line)", m.scrollOff)
 	}
@@ -107,7 +107,7 @@ func TestIncomingAnchorsWhenScrolledUp(t *testing.T) {
 func TestIncomingAtBottomStaysAtBottom(t *testing.T) {
 	m := newScrollTestModel(t)
 	m.scrollOff = 0
-	m, _ = upd(m, incoming([]byte("z: hi")))
+	m, _ = upd(m, incoming{data: []byte("z: hi")})
 	if m.scrollOff != 0 {
 		t.Errorf("at bottom a new line must not scroll us up; scrollOff = %d", m.scrollOff)
 	}

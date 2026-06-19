@@ -308,9 +308,68 @@ func TestDipInBindsSessionAndPumpsChannels(t *testing.T) {
 	// The model must now consume the rebound recv channel: feed it a frame and
 	// run the model's recv-wait Cmd; it should surface as an incoming message.
 	recv <- []byte("peer: hi there")
-	got := waitRecv(m.recv)()
+	got := waitRecv(m.recv, m.epoch)()
 	if _, ok := got.(incoming); !ok {
 		t.Fatalf("rebound recv not consumed by model; waitRecv yielded %T", got)
+	}
+}
+
+// A message from a torn-down dip (stale epoch) must be dropped: the
+// close-driven "stream closed" errMsg from session N must not pollute the
+// scrollback after the user has dipped out and back into session N+1. A
+// current-epoch incoming must still append normally.
+func TestStaleEpochMessagesAreDropped(t *testing.T) {
+	recv := make(chan []byte, 1)
+	states := make(chan connState, 1)
+	send := make(chan []byte, 1)
+	seed := make(chan seedMsg, 1)
+
+	m := newConsoleModel([]wire.AgentNode{{Name: "a", InboxChannel: "i-a"}})
+	m.startChat = func(string) chatSession {
+		return chatSession{recv: recv, states: states, send: send, seed: seed, name: "op", host: "h", histBase: "b"}
+	}
+	m.stopChat = func() {}
+
+	// First dip-in: epoch becomes 1.
+	m, _ = updConsole(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.epoch != 1 {
+		t.Fatalf("first dip-in should bump epoch to 1, got %d", m.epoch)
+	}
+	staleEpoch := m.epoch
+
+	// Dip out (esc → roster), then dip back in: epoch becomes 2.
+	m, _ = updConsole(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.mode != modeRoster {
+		t.Fatalf("esc should return to roster, got mode %d", m.mode)
+	}
+	m, _ = updConsole(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.epoch != 2 {
+		t.Fatalf("second dip-in should bump epoch to 2, got %d", m.epoch)
+	}
+
+	// A stale "stream closed" errMsg from the FIRST session arrives late.
+	before := len(m.msgs)
+	m, _ = updConsole(m, errMsg{fmt.Errorf("stream closed"), staleEpoch})
+	if len(m.msgs) != before {
+		t.Fatalf("stale errMsg must not be appended; msgs grew from %d to %d", before, len(m.msgs))
+	}
+	if m.mode != modeChat {
+		t.Fatalf("stale message must not change mode; got %d", m.mode)
+	}
+
+	// A stale incoming is likewise dropped.
+	m, _ = updConsole(m, incoming{data: []byte("ghost: boo"), epoch: staleEpoch})
+	if len(m.msgs) != before {
+		t.Fatalf("stale incoming must not be appended; msgs = %d", len(m.msgs))
+	}
+
+	// A current-epoch incoming IS appended.
+	m, _ = updConsole(m, incoming{data: []byte("peer: live"), epoch: m.epoch})
+	if len(m.msgs) != before+1 {
+		t.Fatalf("current-epoch incoming should append; msgs = %d, want %d", len(m.msgs), before+1)
+	}
+	if !strings.Contains(m.msgs[len(m.msgs)-1], "live") {
+		t.Fatalf("appended message should be the live one, got %q", m.msgs[len(m.msgs)-1])
 	}
 }
 
