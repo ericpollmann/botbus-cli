@@ -128,13 +128,22 @@ botbus agent remove --name myth-compiler
 local state file (`~/.botbus/state.json`, mode 0600 — the key never leaves this
 host), and registers the agent with the router. Configuration via environment:
 
-- `ROUTER_URL` — router control API (default `http://127.0.0.1:8090`)
+- `ROUTER_URL` — router control API (default `https://botbus-router.fly.dev`, the live router)
 - `HUB_BASE` / `HUB_DOMAIN` — hub origin / apex (default `https://botbus.ai` / `botbus.ai`)
 - `BOTBUS_STATE` — override the state-file path
 
-This is the client side of the fabric; it needs a router exposing the control
-API to register against. The daemon (multiplexed delivery + local MCP) builds on
-this.
+This is the client side of the fabric; it talks to the live router by default,
+so `agent create` and `daemon` register/heartbeat against production out of the
+box. Point at a local router for development with `ROUTER_URL=http://127.0.0.1:8090`.
+
+The daemon (multiplexed delivery + local MCP) builds on this. It resolves its
+router URL with the precedence `--router` flag > `ROUTER_URL` env >
+`state.daemon.router_url` > the live default, so you can override per-run without
+editing the state file:
+
+```sh
+botbus daemon --router http://127.0.0.1:8090   # dev router for this run only
+```
 
 ## Layout
 

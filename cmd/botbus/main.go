@@ -42,6 +42,15 @@ import (
 
 const domain = "botbus.ai"
 
+// DefaultRouterURL is the control-plane base for the routing fabric when neither
+// a --router flag, the ROUTER_URL env, nor state.daemon.router_url is set. It
+// points at the live router rather than a localhost address so a freshly-created
+// agent's daemon registers/heartbeats against production out of the box — a
+// localhost default produced empty/unreachable control bases and the daemon's
+// "unsupported protocol scheme" / connection-refused spam. Shared by agent.go
+// (realDeps) and daemon.go (resolveRouterURL); both are package main here.
+const DefaultRouterURL = "https://botbus-router.fly.dev"
+
 // userAgent returns the User-Agent string this CLI sends on every HTTP and
 // WebSocket request — used by new.botbus.ai's mint endpoint, the channel
 // subdomain WS upgrades, and the proxy.golang.org update check. The "botbus"

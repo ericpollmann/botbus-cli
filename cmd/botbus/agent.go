@@ -29,7 +29,7 @@ func envOr(k, def string) string {
 func realDeps() hostagent.Deps {
 	return hostagent.Deps{
 		Hub:       hubclient.NewHTTPClient(envOr("HUB_BASE", "https://"+domain), envOr("HUB_DOMAIN", domain)),
-		Control:   control.NewClient(envOr("ROUTER_URL", "http://127.0.0.1:8090")),
+		Control:   control.NewClient(envOr("ROUTER_URL", DefaultRouterURL)),
 		StatePath: agentstate.DefaultPath(),
 		MintKey:   keys.New,
 	}
