@@ -87,12 +87,46 @@ type model struct {
 	seed        <-chan seedMsg // one-shot initial /history scrollback + cursor
 	// Console mode: when rooted via newConsoleModel the model carries a roster
 	// sub-view and toggles between it and the chat view. startChat/stopChat are
-	// injectable lifecycle hooks (real WS wiring lands in Task 6; nil in the
-	// direct single-channel chat path from newModel).
+	// injectable lifecycle hooks. startChat dials a live WS for the selected
+	// agent's inbox channel and returns the fresh transport channels + display
+	// name to rebind onto the model; stopChat cancels that WS. Both are nil in
+	// the direct single-channel chat path from newModel.
 	mode      viewMode
 	roster    rosterModel
-	startChat func(channel string) // starts a WS to channel (real impl in Task 6)
-	stopChat  func()               // cancels the active chat WS (real impl in Task 6)
+	startChat func(channel string) chatSession // opens a live WS to channel; returns the bindable session
+	stopChat  func()                           // cancels the active chat WS
+	// Onboard flow (the `o` key in roster mode): a tiny two-step inline prompt
+	// (name → focus) that mints a child agent under the root and prints its
+	// connect URL. onboard is the injected action (real impl wired in runConsole;
+	// nil in the direct-chat path). onboardState advances name → focus → done.
+	onboard      func(name, focus string) (connectURL string, err error)
+	onboardState onboardStep
+	onboardName  string
+	onboardMsg   string // result line shown under the roster (connect URL or error)
+}
+
+type onboardStep int
+
+const (
+	onboardOff onboardStep = iota
+	onboardAskName
+	onboardAskFocus
+)
+
+// chatSession is the transport handle for one dip-in: the fresh per-dip channels
+// runWSText pumps into, plus the display name + channel host for rendering. It is
+// produced by the startChat hook and bound onto the model by Update so the
+// model starts consuming the new channels (via waitRecv/waitState/waitSeed). A
+// zero value (returned by tests or when no transport is wired) leaves the chat
+// channels nil — waitRecv/waitState/waitSeed all tolerate nil/closed channels.
+type chatSession struct {
+	recv     <-chan []byte
+	states   <-chan connState
+	send     chan<- []byte
+	seed     <-chan seedMsg
+	name     string
+	host     string
+	histBase string
 }
 
 // newModel builds the bubbletea model. fresh=true means we just minted this
@@ -337,17 +371,52 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// In chat mode, esc tears the chat down and returns to the roster instead
 	// of quitting; everything else falls through to the chat Update below.
 	if m.mode == modeRoster {
-		if k, ok := msg.(tea.KeyMsg); ok && (k.String() == "esc" || k.String() == "ctrl+c") {
-			return m, tea.Quit
+		// Onboard prompt active: capture name → focus inline, then mint the
+		// child and show the connect URL. esc aborts back to plain roster.
+		if m.onboardState != onboardOff {
+			return m.updateOnboard(msg)
+		}
+		if k, ok := msg.(tea.KeyMsg); ok {
+			switch k.String() {
+			case "esc", "ctrl+c":
+				return m, tea.Quit
+			case "o":
+				// Begin onboarding only when a real action is wired (console mode).
+				if m.onboard != nil {
+					m.onboardState = onboardAskName
+					m.onboardName = ""
+					m.onboardMsg = ""
+				}
+				return m, nil
+			}
 		}
 		r, dip := m.roster.updateRoster(msg)
 		m.roster = r
 		if dip {
 			sel := m.roster.selected()
-			if sel.InboxChannel != "" && m.startChat != nil {
-				m.startChat(sel.InboxChannel)
-			}
 			m.mode = modeChat
+			if sel.InboxChannel != "" && m.startChat != nil {
+				// Open the live WS to the selected agent's inbox and rebind the
+				// model onto the fresh transport channels, then start consuming
+				// them — mirroring how main() issues the initial waits for the
+				// direct-chat path. A zero-value session (no transport wired,
+				// e.g. in tests) leaves the channels nil and skips the waits.
+				s := m.startChat(sel.InboxChannel)
+				if s.recv != nil {
+					m.recv = s.recv
+					m.states = s.states
+					m.send = s.send
+					m.seed = s.seed
+					m.host = s.host
+					m.histBase = s.histBase
+					if s.name != "" {
+						m.myName = s.name
+						m.input = newChatInput(s.name)
+					}
+					m.state = stConnecting
+					return m, tea.Batch(waitRecv(m.recv), waitState(m.states), waitSeed(m.seed), tickCmd())
+				}
+			}
 		}
 		return m, nil
 	}
@@ -555,7 +624,18 @@ func (m model) View() string {
 	// Console roster mode renders the agent tree; chat mode falls through to
 	// the existing chat view below.
 	if m.mode == modeRoster {
-		return m.roster.View()
+		out := m.roster.View()
+		// Inline onboarding prompt: append the current step's input line.
+		switch m.onboardState {
+		case onboardAskName:
+			out += "\n\n" + hintStyle.Render("onboard — new agent name:") + "\n" + m.input.View()
+		case onboardAskFocus:
+			out += "\n\n" + hintStyle.Render("onboard "+m.onboardName+" — focus area:") + "\n" + m.input.View()
+		}
+		if m.onboardMsg != "" {
+			out += "\n\n" + hintStyle.Render(m.onboardMsg)
+		}
+		return out
 	}
 	h, w := m.h, m.w
 	if h < 4 {

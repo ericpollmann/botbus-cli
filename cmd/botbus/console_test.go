@@ -20,7 +20,7 @@ func TestModeTransitionsRosterToChatAndBack(t *testing.T) {
 	started := ""
 	stopped := false
 	m := newConsoleModel([]wire.AgentNode{{Name: "myth-compiler", InboxChannel: "i-c1"}})
-	m.startChat = func(channel string) { started = channel }
+	m.startChat = func(channel string) chatSession { started = channel; return chatSession{} }
 	m.stopChat = func() { stopped = true }
 
 	if m.mode != modeRoster {

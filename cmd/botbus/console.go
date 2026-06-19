@@ -7,11 +7,18 @@ package main
 // View rendering. No WebSocket, no mode switching.
 
 import (
+	"bufio"
+	"context"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ericpollmann/botbus-cli/fabric/console"
+	"github.com/ericpollmann/botbus-cli/fabric/hostagent"
+	"github.com/ericpollmann/botbus-cli/fabric/profile"
 	"github.com/ericpollmann/botbus-proto/wire"
 )
 
@@ -74,6 +81,56 @@ func (m rosterModel) updateRoster(msg tea.Msg) (rosterModel, bool) {
 	return m, false
 }
 
+// updateOnboard drives the inline name → focus onboarding prompt. It reuses the
+// chat textarea as a single-line capture: enter advances the step (name → focus
+// → mint), esc aborts back to the plain roster. On the focus step's enter it
+// calls the injected onboard action and shows the connect URL (or error).
+func (m model) updateOnboard(msg tea.Msg) (tea.Model, tea.Cmd) {
+	k, ok := msg.(tea.KeyMsg)
+	if !ok {
+		// Non-key messages (window size, ticks) fall through to the input update
+		// so the textarea stays sized correctly.
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
+	}
+	switch k.String() {
+	case "esc", "ctrl+c":
+		m.onboardState = onboardOff
+		m.onboardName = ""
+		m.input.Reset()
+		return m, nil
+	case "enter":
+		val := strings.TrimSpace(m.input.Value())
+		m.input.Reset()
+		switch m.onboardState {
+		case onboardAskName:
+			if val == "" {
+				m.onboardMsg = "name is required"
+				return m, nil
+			}
+			m.onboardName = val
+			m.onboardState = onboardAskFocus
+			return m, nil
+		case onboardAskFocus:
+			url, err := m.onboard(m.onboardName, val)
+			m.onboardState = onboardOff
+			if err != nil {
+				m.onboardMsg = "onboard failed: " + err.Error()
+				m.onboardName = ""
+				return m, nil
+			}
+			m.onboardMsg = "tell your agent to connect to " + url
+			m.onboardName = ""
+			return m, nil
+		}
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
 func (m rosterModel) View() string {
 	var b strings.Builder
 	b.WriteString(barStyle.Render("BOTBUS · your agents") + "\n\n")
@@ -96,6 +153,165 @@ func (m rosterModel) View() string {
 		}
 		b.WriteString(paletteStyle(nameColor(n.Name)).Render(line) + "\n")
 	}
-	b.WriteString("\n" + hintStyle.Render("↑/↓ navigate · enter dip in · esc quit"))
+	b.WriteString("\n" + hintStyle.Render("↑/↓ navigate · enter dip in · o onboard · esc quit"))
 	return b.String()
+}
+
+// firstRun is the one-time operator setup: prompt for the operator's name and
+// the standing framing (read from in, prompts written to out), mint the root
+// agent via hostagent.CreateRoot, persist the profile, and return it. Factored
+// pure (io.Reader/io.Writer + injected hostagent.Deps + an explicit profile
+// path) so it's unit-testable with a strings.Reader + fake deps.
+func firstRun(in io.Reader, out io.Writer, deps hostagent.Deps, profilePath string) (*profile.Profile, error) {
+	r := bufio.NewReader(in)
+	fmt.Fprintln(out, "Welcome to the botbus console — one-time setup.")
+	fmt.Fprint(out, "Your name: ")
+	user, err := readLine(r)
+	if err != nil {
+		return nil, fmt.Errorf("read name: %w", err)
+	}
+	user = strings.TrimSpace(user)
+	if user == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	fmt.Fprint(out, "Standing framing (how you work, injected into every agent's welcome): ")
+	framing, err := readLine(r)
+	if err != nil {
+		return nil, fmt.Errorf("read framing: %w", err)
+	}
+	framing = strings.TrimSpace(framing)
+
+	root, err := hostagent.CreateRoot(context.Background(), deps)
+	if err != nil {
+		return nil, fmt.Errorf("create root agent: %w", err)
+	}
+
+	p := &profile.Profile{
+		User:    user,
+		Framing: framing,
+		Root: profile.Root{
+			ID:           root.ID,
+			InboxChannel: root.InboxChannel,
+			Key:          root.Key,
+		},
+	}
+	if err := profile.Save(profilePath, p); err != nil {
+		return nil, fmt.Errorf("save profile: %w", err)
+	}
+	fmt.Fprintf(out, "Root channel ready: https://%s.%s\n", root.InboxChannel, domain)
+	return p, nil
+}
+
+// readLine reads a single line (without the trailing newline) from r. io.EOF
+// with content already read is treated as a complete final line.
+func readLine(r *bufio.Reader) (string, error) {
+	line, err := r.ReadString('\n')
+	if err != nil && (err != io.EOF || line == "") {
+		return "", err
+	}
+	return strings.TrimRight(line, "\r\n"), nil
+}
+
+// onboardChild mints + registers a new child agent under the operator's root,
+// seeds its welcome message into its inbox, and returns the connect URL the
+// operator hands to the agent. Factored out of the TUI so it's unit-testable
+// with fake deps (assert child created with Parent=root + welcome published).
+func onboardChild(ctx context.Context, deps hostagent.Deps, p *profile.Profile, name, focus string) (connectURL string, err error) {
+	child, err := hostagent.Create(ctx, deps, hostagent.CreateOpts{
+		Name:   name,
+		Focus:  focus,
+		Parent: p.Root.ID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("create child: %w", err)
+	}
+	welcome := console.RenderWelcome(child.Name, focus, "root", p)
+	if err := console.SeedWelcome(ctx, deps.Hub, child.InboxChannel, welcome); err != nil {
+		return "", fmt.Errorf("seed welcome: %w", err)
+	}
+	return fmt.Sprintf("https://%s.%s", child.InboxChannel, domain), nil
+}
+
+// runConsole is the no-args entrypoint: load (or first-run create) the operator
+// profile, fetch the agent roster from the router, and launch the hierarchical
+// console TUI with real dip-in WS wiring.
+func runConsole() {
+	profilePath := profile.DefaultPath()
+	p, err := profile.Load(profilePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "profile:", err)
+		os.Exit(1)
+	}
+	if !p.Configured() {
+		p, err = firstRun(os.Stdin, os.Stdout, realDeps(), profilePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "setup:", err)
+			os.Exit(1)
+		}
+	}
+
+	deps := realDeps()
+	ctx := context.Background()
+	nodes, err := deps.Control.Roster(ctx, p.Root.ID, p.Root.Key)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "roster unavailable (is the router deployed?):", err)
+		// Fall back to a single-node roster (just the root) so the console still
+		// opens and the operator can at least dip into / onboard from the root.
+		nodes = []wire.AgentNode{{
+			ID:           p.Root.ID,
+			Name:         "root",
+			InboxChannel: p.Root.InboxChannel,
+		}}
+	}
+
+	m := newConsoleModel(nodes)
+	wireConsoleChat(&m, p)
+	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+// wireConsoleChat installs the real dip-in WS lifecycle hooks on the console
+// model. startChat dials a live text WebSocket for the selected agent's inbox
+// channel and returns the fresh transport channels for Update to bind; stopChat
+// cancels that WS. The cancel is shared between the two closures via a captured
+// variable so stopChat can tear down whatever startChat last opened.
+func wireConsoleChat(m *model, p *profile.Profile) {
+	var cancel context.CancelFunc
+	name := resolveName()
+	m.startChat = func(channel string) chatSession {
+		// Tear down any prior dip before opening a new one (defensive — Update
+		// always stops before re-dipping, but a stale goroutine here would leak).
+		if cancel != nil {
+			cancel()
+		}
+		// The inbox is a bare channel id → https://<id>.botbus.ai/.
+		httpURL, rerr := resolveURL(channel)
+		if rerr != nil {
+			return chatSession{}
+		}
+		ctx, c := context.WithCancel(context.Background())
+		cancel = c
+		recv := make(chan []byte, 64)
+		send := make(chan []byte, 16)
+		states := make(chan connState, 4)
+		seedCh := make(chan seedMsg, 1)
+		histBase := strings.TrimRight(httpURL, "/")
+		textURL, _ := channelStreamURLs(httpURL)
+		go runWSText(ctx, textURL, histBase, recv, send, states, seedCh)
+		return chatSession{
+			recv: recv, states: states, send: send, seed: seedCh,
+			name: name, host: hostFromURL(httpURL), histBase: histBase,
+		}
+	}
+	m.stopChat = func() {
+		if cancel != nil {
+			cancel()
+			cancel = nil
+		}
+	}
+	m.onboard = func(name, focus string) (string, error) {
+		return onboardChild(context.Background(), realDeps(), p, name, focus)
+	}
 }

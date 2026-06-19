@@ -195,6 +195,16 @@ func main() {
 
 	args := parseArgs(os.Args[1:])
 
+	// Bare `botbus` (no positional channel, not headless monitor mode) opens the
+	// hierarchical operator console: first-run profile setup, the agent roster,
+	// live dip-in chat, and onboarding. The positional-channel and --monitor
+	// paths below are unchanged. (Previously bare `botbus` minted a fresh chat
+	// channel; that behavior now lives only behind an explicit channel arg.)
+	if args.channel == "" && !args.monitor {
+		runConsole()
+		return
+	}
+
 	// Resolve the user's display name: explicit --name beats env beats default.
 	name := resolveName()
 	if args.name != "" {
