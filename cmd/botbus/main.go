@@ -49,7 +49,7 @@ const domain = "botbus.ai"
 // localhost default produced empty/unreachable control bases and the daemon's
 // "unsupported protocol scheme" / connection-refused spam. Shared by agent.go
 // (realDeps) and daemon.go (resolveRouterURL); both are package main here.
-const DefaultRouterURL = "https://botbus-router.fly.dev"
+const DefaultRouterURL = "https://router.botbus.ai"
 
 // userAgent returns the User-Agent string this CLI sends on every HTTP and
 // WebSocket request — used by new.botbus.ai's mint endpoint, the channel
