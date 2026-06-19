@@ -99,6 +99,11 @@ func Create(ctx context.Context, d Deps, o CreateOpts) (agentstate.Agent, error)
 	return a, nil
 }
 
+// CreateRoot creates the workspace root — the first agent, with no parent.
+func CreateRoot(ctx context.Context, d Deps) (agentstate.Agent, error) {
+	return Create(ctx, d, CreateOpts{Name: "root"})
+}
+
 // List returns the locally-registered agents.
 func List(statePath string) ([]agentstate.Agent, error) {
 	s, err := agentstate.Load(statePath)
