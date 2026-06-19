@@ -83,6 +83,31 @@ func (c *Client) Mint(ctx context.Context) (string, error) {
 	return out.ID, nil
 }
 
+// Roster fetches the agent tree (GET /v1/agents), authenticating as the given
+// agent (typically the root). Returns the nodes with parent links + liveness.
+func (c *Client) Roster(ctx context.Context, id, key string) ([]wire.AgentNode, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/v1/agents", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Agent-Id", id)
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("control roster: status %d: %s", resp.StatusCode, bytes.TrimSpace(msg))
+	}
+	var nodes []wire.AgentNode
+	if err := json.NewDecoder(resp.Body).Decode(&nodes); err != nil {
+		return nil, err
+	}
+	return nodes, nil
+}
+
 func (c *Client) do(req *http.Request, want int) error {
 	resp, err := c.hc.Do(req)
 	if err != nil {
