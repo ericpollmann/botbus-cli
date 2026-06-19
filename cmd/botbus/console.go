@@ -12,7 +12,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -95,7 +97,11 @@ func (m model) updateOnboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	switch k.String() {
-	case "esc", "ctrl+c":
+	case "ctrl+c":
+		// ctrl+c is the universal quit, even mid-onboard.
+		return m, tea.Quit
+	case "esc":
+		// esc only aborts the onboarding prompt, returning to the plain roster.
 		m.onboardState = onboardOff
 		m.onboardName = ""
 		m.input.Reset()
@@ -181,7 +187,11 @@ func firstRun(in io.Reader, out io.Writer, deps hostagent.Deps, profilePath stri
 	}
 	framing = strings.TrimSpace(framing)
 
-	root, err := hostagent.CreateRoot(context.Background(), deps)
+	// EnsureRoot (not CreateRoot) so a first-run that minted a local root but
+	// then failed to Register (flaky router) is idempotent: the next run reuses
+	// the existing local root and re-registers it instead of dying with "already
+	// exists". See hostagent.EnsureRoot.
+	root, err := hostagent.EnsureRoot(context.Background(), deps)
 	if err != nil {
 		return nil, fmt.Errorf("create root agent: %w", err)
 	}
@@ -236,6 +246,13 @@ func onboardChild(ctx context.Context, deps hostagent.Deps, p *profile.Profile, 
 // profile, fetch the agent roster from the router, and launch the hierarchical
 // console TUI with real dip-in WS wiring.
 func runConsole() {
+	// Root every console context in a signal-canceled context (mirrors main()'s
+	// direct-chat path) so SIGINT/SIGTERM cancels the live dip's WebSocket
+	// cleanly on exit rather than leaving the socket goroutine running.
+	ctx, cancel := signal.NotifyContext(context.Background(),
+		syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
 	profilePath := profile.DefaultPath()
 	p, err := profile.Load(profilePath)
 	if err != nil {
@@ -251,7 +268,6 @@ func runConsole() {
 	}
 
 	deps := realDeps()
-	ctx := context.Background()
 	nodes, err := deps.Control.Roster(ctx, p.Root.ID, p.Root.Key)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "roster unavailable (is the router deployed?):", err)
@@ -265,7 +281,7 @@ func runConsole() {
 	}
 
 	m := newConsoleModel(nodes)
-	wireConsoleChat(&m, p)
+	wireConsoleChat(ctx, &m, p)
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -277,7 +293,7 @@ func runConsole() {
 // channel and returns the fresh transport channels for Update to bind; stopChat
 // cancels that WS. The cancel is shared between the two closures via a captured
 // variable so stopChat can tear down whatever startChat last opened.
-func wireConsoleChat(m *model, p *profile.Profile) {
+func wireConsoleChat(parent context.Context, m *model, p *profile.Profile) {
 	var cancel context.CancelFunc
 	name := resolveName()
 	m.startChat = func(channel string) chatSession {
@@ -291,7 +307,9 @@ func wireConsoleChat(m *model, p *profile.Profile) {
 		if rerr != nil {
 			return chatSession{}
 		}
-		ctx, c := context.WithCancel(context.Background())
+		// Child of the signal-canceled parent so program exit (SIGINT/SIGTERM)
+		// cancels the live dip's socket cleanly.
+		ctx, c := context.WithCancel(parent)
 		cancel = c
 		recv := make(chan []byte, 64)
 		send := make(chan []byte, 16)

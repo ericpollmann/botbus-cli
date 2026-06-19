@@ -424,8 +424,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.roster = r
 		if dip {
 			sel := m.roster.selected()
-			m.mode = modeChat
+			// Only enter chat mode when there's actually a session to start —
+			// a node with an empty InboxChannel (or no startChat hook) would
+			// otherwise strand the user in an empty, un-dialable chat view.
 			if sel.InboxChannel != "" && m.startChat != nil {
+				m.mode = modeChat
 				// Open the live WS to the selected agent's inbox and rebind the
 				// model onto the fresh transport channels, then start consuming
 				// them — mirroring how main() issues the initial waits for the

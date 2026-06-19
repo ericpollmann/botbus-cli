@@ -85,6 +85,86 @@ func TestFirstRunCreatesRootAndSavesProfile(t *testing.T) {
 	}
 }
 
+// flakyControlDeps mints fresh ids but fails the FIRST register with 500 then
+// succeeds — mirroring a flaky router during first-run.
+func flakyControlDeps(t *testing.T, hub *hubclient.Fake, statePath string) hostagent.Deps {
+	t.Helper()
+	var n atomic.Int64
+	var regN atomic.Int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/mint", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": fmt.Sprintf("minted-%d", n.Add(1))})
+	})
+	mux.HandleFunc("PUT /v1/agents/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		if regN.Add(1) == 1 {
+			http.Error(w, "router down", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return hostagent.Deps{
+		Hub:       hub,
+		Control:   control.NewClient(srv.URL),
+		StatePath: statePath,
+		MintKey:   func() string { return "key-fixed" },
+	}
+}
+
+// firstRun is idempotent across a flaky-router first attempt: the first call
+// fails at Register (leaving a local root but no saved profile); the second
+// call must REUSE that local root (no "already exists") and end with a saved
+// profile.
+func TestFirstRunIdempotentAfterRegisterFailure(t *testing.T) {
+	hub := hubclient.NewFake()
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	deps := flakyControlDeps(t, hub, statePath)
+	profilePath := filepath.Join(t.TempDir(), "profile.json")
+	input := "eric\nworks async\n"
+
+	// First run: register fails → error, no saved profile, but a local root.
+	if _, err := firstRun(strings.NewReader(input), &strings.Builder{}, deps, profilePath); err == nil {
+		t.Fatal("first firstRun should fail when Register is down")
+	}
+	if _, err := profile.Load(profilePath); err == nil {
+		// Load of a missing file yields a zero (unconfigured) profile, not an
+		// error — assert it's not configured rather than expecting a load error.
+		p, _ := profile.Load(profilePath)
+		if p.Configured() {
+			t.Fatal("profile must not be saved/configured after a failed first run")
+		}
+	}
+	agents, err := hostagent.List(statePath)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(agents) != 1 || agents[0].Name != "root" {
+		t.Fatalf("a local root should persist after the failed register: %+v", agents)
+	}
+	firstID := agents[0].ID
+
+	// Second run: must reuse the local root (no duplicate, no error) and save.
+	p, err := firstRun(strings.NewReader(input), &strings.Builder{}, deps, profilePath)
+	if err != nil {
+		t.Fatalf("second firstRun should reuse the local root and succeed: %v", err)
+	}
+	if p.Root.ID != firstID {
+		t.Fatalf("reused root id = %q, want persisted %q", p.Root.ID, firstID)
+	}
+	if !p.Configured() {
+		t.Fatal("profile should be Configured after the successful re-run")
+	}
+	agents, _ = hostagent.List(statePath)
+	if len(agents) != 1 {
+		t.Fatalf("firstRun must not create a second root: %+v", agents)
+	}
+	saved, err := profile.Load(profilePath)
+	if err != nil || !saved.Configured() {
+		t.Fatalf("profile should be saved on disk after the re-run: %v configured=%v", err, saved.Configured())
+	}
+}
+
 func TestFirstRunRequiresName(t *testing.T) {
 	hub := hubclient.NewFake()
 	deps := fakeDeps(t, hub)
@@ -378,7 +458,7 @@ func TestStaleEpochMessagesAreDropped(t *testing.T) {
 func TestWireConsoleChatHooksInstalled(t *testing.T) {
 	m := newConsoleModel(nil)
 	p := &profile.Profile{User: "eric", Root: profile.Root{ID: "root", InboxChannel: "in", Key: "k"}}
-	wireConsoleChat(&m, p)
+	wireConsoleChat(context.Background(), &m, p)
 	if m.startChat == nil || m.stopChat == nil || m.onboard == nil {
 		t.Fatal("wireConsoleChat should install all three hooks")
 	}

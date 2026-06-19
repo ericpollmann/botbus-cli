@@ -104,6 +104,44 @@ func CreateRoot(ctx context.Context, d Deps) (agentstate.Agent, error) {
 	return Create(ctx, d, CreateOpts{Name: "root"})
 }
 
+// EnsureRoot returns the workspace root, creating it on first run and reusing it
+// on subsequent runs. It exists because Create persists to local state BEFORE
+// Control.Register: a Register failure during first-run (e.g. router down)
+// leaves a local "root" while the caller's profile.Save never ran, so a naive
+// re-run of CreateRoot would hit "agent named root already exists locally" and
+// wedge forever. EnsureRoot instead reuses any existing local root and just
+// re-registers it (Register is idempotent). If the re-register still fails the
+// existing local root is left intact so a later run succeeds once the router is
+// reachable — and no second root is ever minted.
+func EnsureRoot(ctx context.Context, d Deps) (agentstate.Agent, error) {
+	existing, ok, err := GetByName(d.StatePath, "root")
+	if err != nil {
+		return agentstate.Agent{}, err
+	}
+	if ok {
+		if rerr := d.Control.Register(ctx, existing.ID, existing.Key, specOf(existing)); rerr != nil {
+			return agentstate.Agent{}, fmt.Errorf("re-register existing root: %w", rerr)
+		}
+		return existing, nil
+	}
+	return CreateRoot(ctx, d)
+}
+
+// GetByName returns the locally-registered agent with the given name (the human
+// addressing alias, not the opaque id) and whether one was found.
+func GetByName(statePath, name string) (agentstate.Agent, bool, error) {
+	s, err := agentstate.Load(statePath)
+	if err != nil {
+		return agentstate.Agent{}, false, fmt.Errorf("load state: %w", err)
+	}
+	for _, a := range s.Agents {
+		if a.Name == name {
+			return a, true, nil
+		}
+	}
+	return agentstate.Agent{}, false, nil
+}
+
 // List returns the locally-registered agents.
 func List(statePath string) ([]agentstate.Agent, error) {
 	s, err := agentstate.Load(statePath)

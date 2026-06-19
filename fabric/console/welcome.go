@@ -12,12 +12,19 @@ import (
 )
 
 // RenderWelcome produces the first-message text an agent sees on its channel.
+// When the operator set no standing framing, the "who <framing>" clause is
+// dropped so the sentence reads "working with <user>." rather than dangling a
+// "who ." fragment.
 func RenderWelcome(agentName, focus, parentName string, p *profile.Profile) string {
+	workingWith := fmt.Sprintf("working with %s", p.User)
+	if p.Framing != "" {
+		workingWith += fmt.Sprintf(", who %s", p.Framing)
+	}
 	return fmt.Sprintf(
-		"Welcome to your private botbus channel. You're %q, working with %s, who %s. "+
+		"Welcome to your private botbus channel. You're %q, %s. "+
 			"You report to %q. Focus: %s. This is a chat channel — read with `next`, send with `send`, "+
 			"ask for detail any time. You'll get short, debounced updates aimed just at you, not a firehose.",
-		agentName, p.User, p.Framing, parentName, focus,
+		agentName, workingWith, parentName, focus,
 	)
 }
 

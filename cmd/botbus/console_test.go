@@ -36,6 +36,24 @@ func TestModeTransitionsRosterToChatAndBack(t *testing.T) {
 	}
 }
 
+// A node with an empty InboxChannel must NOT switch into chat mode — there's
+// nothing to dial, so staying in the roster avoids stranding the user in an
+// empty, un-dialable chat view (N4).
+func TestDipIntoEmptyInboxStaysInRoster(t *testing.T) {
+	started := false
+	m := newConsoleModel([]wire.AgentNode{{Name: "no-inbox", InboxChannel: ""}})
+	m.startChat = func(string) chatSession { started = true; return chatSession{} }
+	m.stopChat = func() {}
+
+	m, _ = updConsole(m, tea.KeyMsg{Type: tea.KeyEnter}) // dip into the empty node
+	if m.mode != modeRoster {
+		t.Fatalf("empty-inbox node should keep us in roster mode, got %d", m.mode)
+	}
+	if started {
+		t.Fatal("startChat must not be called for an empty-inbox node")
+	}
+}
+
 // In roster mode, esc quits the program (no chat to return from).
 func TestRosterModeEscQuits(t *testing.T) {
 	m := newConsoleModel([]wire.AgentNode{{Name: "root", InboxChannel: "i"}})
@@ -43,6 +61,26 @@ func TestRosterModeEscQuits(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("esc in roster mode should return a quit command")
 	}
+}
+
+// ctrl+c during the onboard prompt quits the program (esc still aborts, tested
+// in console_run_test.go's TestOnboardEscAborts).
+func TestOnboardCtrlCQuits(t *testing.T) {
+	m := newConsoleModel([]wire.AgentNode{{Name: "root", InboxChannel: "i"}})
+	m.onboard = func(string, string) (string, error) { return "", nil }
+	m, _ = updConsole(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	if m.onboardState != onboardAskName {
+		t.Fatalf("o should begin onboarding, got state %d", m.onboardState)
+	}
+	mm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c during onboarding should return a quit command")
+	}
+	// Quit means we do NOT silently abort back to a plain roster as if nothing
+	// happened — the program is ending. (We don't assert the exact tea.Quit
+	// identity because tea.Quit is an unexported sentinel; a non-nil cmd that
+	// isn't the no-op is the observable contract here.)
+	_ = mm
 }
 
 func TestRosterNavigationSelectsAgent(t *testing.T) {
