@@ -46,7 +46,19 @@ var reconnectBackoff = 2 * time.Second
 // do not echo back on recv — the UI's local "→ text" line is the only
 // display of our own messages.
 func runWSText(ctx context.Context, target, histBase string, recv chan<- []byte, send <-chan []byte, states chan<- connState, seedCh chan<- seedMsg) {
+	// Close ALL per-session channels when the loop returns (ctx canceled by
+	// stopChat on dip-out, or process shutdown). Without this, a parked
+	// waitState/waitSeed goroutine blocked on a never-closed channel would leak
+	// once per dip-in. A closed channel makes those waits resolve (the `v, _ :=
+	// <-c` idiom yields a zero value) so the generation can exit; the epoch
+	// guard in Update drops the resulting zero-value msg for a stale session.
+	// For the direct-chat path (one process-lifetime session) this closing at
+	// shutdown is harmless — nothing waits afterward.
 	defer close(recv)
+	defer close(states)
+	if seedCh != nil {
+		defer close(seedCh)
+	}
 	ring := newFPRing(resumeDefaultK)
 	// Seed the scrollback + resume ring from /history BEFORE the first connect.
 	// The model renders the seed as initial history (with a pagination cursor),

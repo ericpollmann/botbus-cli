@@ -43,18 +43,33 @@ const (
 	stDown
 )
 
+// Per-session messages carry the epoch (generation) of the chat session they
+// were armed for. Update drops any whose epoch != m.epoch — stale messages from
+// a torn-down dip (including the close-driven "stream closed" errMsg) must not
+// leak into the current session's scrollback or re-arm a wait on a dead channel.
+// The direct-chat path uses epoch 0 throughout (a single generation).
 type (
-	incoming []byte
-	stateMsg connState
-	tickMsg  struct{}
-	errMsg   struct{ error }
+	incoming struct {
+		data  []byte
+		epoch int
+	}
+	stateMsg struct {
+		state connState
+		epoch int
+	}
+	tickMsg struct{}
+	errMsg  struct {
+		error
+		epoch int
+	}
 	// seedMsg carries the initial /history scrollback (oldest-first frames)
 	// plus the pagination cursor, delivered once by runWSText before the WS
 	// connects (see ws.go). Rendered without touching peer dots — these are
-	// history, not live presence.
+	// history, not live presence. epoch tags it to its session (see above).
 	seedMsg struct {
 		frames [][]byte
 		next   string
+		epoch  int
 	}
 	// olderMsg carries one older /history page fetched on scroll-back (or a
 	// failure flag so the model can re-enable the fetch on the next scroll).
@@ -85,6 +100,53 @@ type model struct {
 	histLoading bool           // a scroll-back /history fetch is in flight
 	noMoreHist  bool           // reached the start of the buffer
 	seed        <-chan seedMsg // one-shot initial /history scrollback + cursor
+	// Console mode: when rooted via newConsoleModel the model carries a roster
+	// sub-view and toggles between it and the chat view. startChat/stopChat are
+	// injectable lifecycle hooks. startChat dials a live WS for the selected
+	// agent's inbox channel and returns the fresh transport channels + display
+	// name to rebind onto the model; stopChat cancels that WS. Both are nil in
+	// the direct single-channel chat path from newModel.
+	mode      viewMode
+	roster    rosterModel
+	startChat func(channel string) chatSession // opens a live WS to channel; returns the bindable session
+	stopChat  func()                           // cancels the active chat WS
+	// Onboard flow (the `o` key in roster mode): a tiny two-step inline prompt
+	// (name → focus) that mints a child agent under the root and prints its
+	// connect URL. onboard is the injected action (real impl wired in runConsole;
+	// nil in the direct-chat path). onboardState advances name → focus → done.
+	onboard      func(name, focus string) (connectURL string, err error)
+	onboardState onboardStep
+	onboardName  string
+	onboardMsg   string // result line shown under the roster (connect URL or error)
+	// epoch is the session generation. It increments on each dip-in (when
+	// binding a new chatSession) and is captured into every wait Cmd's closure
+	// so Update can drop messages from a prior, torn-down session. The
+	// direct-chat path never increments it, so it stays 0 (one generation).
+	epoch int
+}
+
+type onboardStep int
+
+const (
+	onboardOff onboardStep = iota
+	onboardAskName
+	onboardAskFocus
+)
+
+// chatSession is the transport handle for one dip-in: the fresh per-dip channels
+// runWSText pumps into, plus the display name + channel host for rendering. It is
+// produced by the startChat hook and bound onto the model by Update so the
+// model starts consuming the new channels (via waitRecv/waitState/waitSeed). A
+// zero value (returned by tests or when no transport is wired) leaves the chat
+// channels nil — waitRecv/waitState/waitSeed all tolerate nil/closed channels.
+type chatSession struct {
+	recv     <-chan []byte
+	states   <-chan connState
+	send     chan<- []byte
+	seed     <-chan seedMsg
+	name     string
+	host     string
+	histBase string
 }
 
 // newModel builds the bubbletea model. fresh=true means we just minted this
@@ -93,7 +155,10 @@ type model struct {
 // of the per-channel welcomed marker. fresh=false means the user joined an
 // existing channel; the popup shows once per new-to-this-machine channel,
 // gated by ~/.config/botbus/welcomed/<id>.
-func newModel(host, histBase, myName string, fresh bool, recv <-chan []byte, states <-chan connState, send chan<- []byte, seed <-chan seedMsg) model {
+// newChatInput builds the chat textarea with the speaker's colored-name prompt.
+// Shared by newModel (direct chat) and newConsoleModel (console chat dip), so
+// both paths get an identical, non-nil input field.
+func newChatInput(myName string) textarea.Model {
 	// SetPromptFunc renders the user's own colored name on line 0 and an
 	// equal-width blank indent on subsequent lines so multi-line input
 	// aligns nicely under the first line of text.
@@ -121,6 +186,11 @@ func newModel(host, histBase, myName string, fresh bool, recv <-chan []byte, sta
 		return indent
 	})
 	ta.Focus()
+	return ta
+}
+
+func newModel(host, histBase, myName string, fresh bool, recv <-chan []byte, states <-chan connState, send chan<- []byte, seed <-chan seedMsg) model {
+	ta := newChatInput(myName)
 	// Auto-show the welcome popup on fresh mint OR on first visit to a
 	// previously-unseen channel. The per-channel marker file gates the
 	// second case so re-launching against a known channel doesn't pop the
@@ -134,6 +204,10 @@ func newModel(host, histBase, myName string, fresh bool, recv <-chan []byte, sta
 		recv: recv, states: states, send: send, seed: seed,
 		seenColors: map[int]time.Time{},
 		welcome:    welcomeState{visible: autoShow, fresh: fresh},
+		// Direct single-channel chat (botbus <channel>): run in chat mode so the
+		// mode zero-value (modeRoster) doesn't divert the existing entrypoint
+		// into a roster view. The console roots in roster mode via newConsoleModel.
+		mode: modeChat,
 	}
 }
 
@@ -248,34 +322,43 @@ func (m model) maybeLoadOlder() (tea.Model, tea.Cmd) {
 	return m, loadOlder(m.histBase, m.oldestID)
 }
 
-func waitRecv(c <-chan []byte) tea.Cmd {
+// waitRecv/waitState/waitSeed each capture the epoch they were armed for so the
+// resulting msg is tagged to its session. Update drops msgs whose epoch doesn't
+// match the model's current epoch (a torn-down dip) and only re-arms waits for
+// the current epoch — a stale generation's channels close and its goroutine
+// exits rather than spinning. A closed channel yields a zero value (the `_` ok),
+// which the epoch guard then drops for any stale session.
+func waitRecv(c <-chan []byte, epoch int) tea.Cmd {
 	return func() tea.Msg {
 		m, ok := <-c
 		if !ok {
-			return errMsg{fmt.Errorf("stream closed")}
+			return errMsg{fmt.Errorf("stream closed"), epoch}
 		}
-		return incoming(m)
+		return incoming{data: m, epoch: epoch}
 	}
 }
-func waitState(c <-chan connState) tea.Cmd {
-	return func() tea.Msg { s, _ := <-c; return stateMsg(s) }
+func waitState(c <-chan connState, epoch int) tea.Cmd {
+	return func() tea.Msg { s, _ := <-c; return stateMsg{state: s, epoch: epoch} }
 }
 func tickCmd() tea.Cmd {
 	return tea.Tick(spinSpeed, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
 // waitSeed blocks for the one-shot initial /history scrollback delivered by
-// runWSText (oldest-first frames + pagination cursor). A closed channel
-// yields an empty seed so the model still proceeds. Not re-armed — one-shot.
-func waitSeed(c <-chan seedMsg) tea.Cmd {
+// runWSText (oldest-first frames + pagination cursor). A closed channel yields
+// an empty seed so the model still proceeds. Not re-armed — one-shot. The epoch
+// is stamped here (overriding whatever ws.go sent) so a stale dip's seed is
+// dropped by the guard in Update.
+func waitSeed(c <-chan seedMsg, epoch int) tea.Cmd {
 	return func() tea.Msg {
 		if c == nil {
-			return seedMsg{}
+			return seedMsg{epoch: epoch}
 		}
 		s, ok := <-c
 		if !ok {
-			return seedMsg{}
+			return seedMsg{epoch: epoch}
 		}
+		s.epoch = epoch
 		return s
 	}
 }
@@ -294,23 +377,99 @@ func loadOlder(base, before string) tea.Cmd {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(waitRecv(m.recv), waitState(m.states), waitSeed(m.seed), tea.WindowSize(), tickCmd())
+	return tea.Batch(waitRecv(m.recv, m.epoch), waitState(m.states, m.epoch), waitSeed(m.seed, m.epoch), tea.WindowSize(), tickCmd())
 }
 
 func (m model) publish(text string) tea.Cmd {
 	send := m.send
+	epoch := m.epoch
 	out := []byte(m.myName + ": " + text)
 	return func() tea.Msg {
 		select {
 		case send <- out:
 			return nil
 		case <-time.After(5 * time.Second):
-			return errMsg{fmt.Errorf("send timeout")}
+			return errMsg{fmt.Errorf("send timeout"), epoch}
 		}
 	}
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Console mode switch (Task 5). In roster mode the roster sub-view owns
+	// navigation; enter dips into the selected agent's inbox channel (starting
+	// the chat via the injected hook) and switches to chat mode. esc quits.
+	// In chat mode, esc tears the chat down and returns to the roster instead
+	// of quitting; everything else falls through to the chat Update below.
+	if m.mode == modeRoster {
+		// Onboard prompt active: capture name → focus inline, then mint the
+		// child and show the connect URL. esc aborts back to plain roster.
+		if m.onboardState != onboardOff {
+			return m.updateOnboard(msg)
+		}
+		if k, ok := msg.(tea.KeyMsg); ok {
+			switch k.String() {
+			case "esc", "ctrl+c":
+				return m, tea.Quit
+			case "o":
+				// Begin onboarding only when a real action is wired (console mode).
+				if m.onboard != nil {
+					m.onboardState = onboardAskName
+					m.onboardName = ""
+					m.onboardMsg = ""
+				}
+				return m, nil
+			}
+		}
+		r, dip := m.roster.updateRoster(msg)
+		m.roster = r
+		if dip {
+			sel := m.roster.selected()
+			// Only enter chat mode when there's actually a session to start —
+			// a node with an empty InboxChannel (or no startChat hook) would
+			// otherwise strand the user in an empty, un-dialable chat view.
+			if sel.InboxChannel != "" && m.startChat != nil {
+				m.mode = modeChat
+				// Open the live WS to the selected agent's inbox and rebind the
+				// model onto the fresh transport channels, then start consuming
+				// them — mirroring how main() issues the initial waits for the
+				// direct-chat path. A zero-value session (no transport wired,
+				// e.g. in tests) leaves the channels nil and skips the waits.
+				s := m.startChat(sel.InboxChannel)
+				if s.recv != nil {
+					m.recv = s.recv
+					m.states = s.states
+					m.send = s.send
+					m.seed = s.seed
+					m.host = s.host
+					m.histBase = s.histBase
+					if s.name != "" {
+						m.myName = s.name
+						m.input = newChatInput(s.name)
+					}
+					m.state = stConnecting
+					// New generation: bump the epoch and arm waits tagged with it.
+					// Any messages still in flight from the prior dip carry the old
+					// epoch and get dropped by the guards in Update.
+					m.epoch++
+					return m, tea.Batch(waitRecv(m.recv, m.epoch), waitState(m.states, m.epoch), waitSeed(m.seed, m.epoch), tickCmd())
+				}
+			}
+		}
+		return m, nil
+	}
+	// mode == modeChat: esc returns to the roster instead of quitting (ctrl+c
+	// still quits, handled in the chat key switch below). Only meaningful when
+	// the model was rooted as a console — a direct chat model has no roster to
+	// return to, but its esc-quits behavior is unchanged because such a model
+	// is never in roster mode and its roster is empty (selecting nothing).
+	if k, ok := msg.(tea.KeyMsg); ok && !m.welcome.visible && k.String() == "esc" && m.stopChat != nil {
+		m.stopChat()
+		m.mode = modeRoster
+		// Clear the chat scrollback so the next dip starts fresh.
+		m.msgs = nil
+		m.scrollOff = 0
+		return m, nil
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
@@ -381,8 +540,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.publish(text)
 		}
 	case incoming:
-		name, body, named := parseMsg(msg)
-		text := string(msg)
+		// Drop frames from a torn-down dip: don't append, don't re-arm a wait on
+		// the stale (now closed) channel — let that generation die.
+		if msg.epoch != m.epoch {
+			return m, nil
+		}
+		name, body, named := parseMsg(msg.data)
+		text := string(msg.data)
 		if named {
 			m.seenColors[nameColor(name)] = time.Now()
 			m.appendSpoken(name, body, text)
@@ -396,8 +560,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			w, _ := m.effWH()
 			m.scrollOff += rowsOf(m.msgs[len(m.msgs)-1], w)
 		}
-		return m, waitRecv(m.recv)
+		return m, waitRecv(m.recv, m.epoch)
 	case seedMsg:
+		// Drop a stale dip's seed (it carries the old generation's history).
+		if msg.epoch != m.epoch {
+			return m, nil
+		}
 		// One-shot initial /history scrollback: append oldest-first (these are
 		// the newest ~40, in order) and set the pagination cursor. Stays pinned
 		// to the bottom (scrollOff already 0). Not re-armed.
@@ -436,12 +604,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case stateMsg:
-		m.state = connState(msg)
-		return m, waitState(m.states)
+		// Stale dip's connection state: ignore (and don't re-arm the dead chan).
+		if msg.epoch != m.epoch {
+			return m, nil
+		}
+		m.state = msg.state
+		return m, waitState(m.states, m.epoch)
 	case tickMsg:
 		m.spinIdx++
 		return m, tickCmd()
 	case errMsg:
+		// The close-driven "stream closed" from a torn-down dip arrives here with
+		// the old epoch — drop it so it doesn't pollute the new session's view.
+		if msg.epoch != m.epoch {
+			return m, nil
+		}
 		m.msgs = append(m.msgs, errStyle.Render("! "+msg.Error()))
 		return m, nil
 	}
@@ -499,6 +676,22 @@ func (m model) renderDots() string {
 }
 
 func (m model) View() string {
+	// Console roster mode renders the agent tree; chat mode falls through to
+	// the existing chat view below.
+	if m.mode == modeRoster {
+		out := m.roster.View()
+		// Inline onboarding prompt: append the current step's input line.
+		switch m.onboardState {
+		case onboardAskName:
+			out += "\n\n" + hintStyle.Render("onboard — new agent name:") + "\n" + m.input.View()
+		case onboardAskFocus:
+			out += "\n\n" + hintStyle.Render("onboard "+m.onboardName+" — focus area:") + "\n" + m.input.View()
+		}
+		if m.onboardMsg != "" {
+			out += "\n\n" + hintStyle.Render(m.onboardMsg)
+		}
+		return out
+	}
 	h, w := m.h, m.w
 	if h < 4 {
 		h = 24
