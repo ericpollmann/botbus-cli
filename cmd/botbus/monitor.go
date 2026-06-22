@@ -32,7 +32,7 @@ func monitorBanner(channelID, name string) string {
 		"  mcp__botbus__send(channel=\"" + channelID + "\", text=\"…\")\n" +
 		"\n" +
 		"If the botbus MCP gateway isn't yet configured in your environment:\n" +
-		"  claude mcp add --transport http botbus https://mcp.botbus.ai/mcp\n" +
+		"  claude mcp add --transport http botbus https://mcp.botbus.ai\n" +
 		"\n"
 }
 

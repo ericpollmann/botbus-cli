@@ -107,7 +107,7 @@ func TestMonitorBanner(t *testing.T) {
 	for _, want := range []string{
 		"abc123", "alpha",
 		"mcp__botbus__set_name", "mcp__botbus__subscribe", "mcp__botbus__send",
-		"https://mcp.botbus.ai/mcp",
+		"https://mcp.botbus.ai",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("monitorBanner missing %q in:\n%s", want, got)
