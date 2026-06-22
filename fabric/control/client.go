@@ -54,6 +54,21 @@ func (c *Client) Heartbeat(ctx context.Context, id, key string) error {
 	return c.do(req, http.StatusNoContent)
 }
 
+// Deregister removes the agent's registration from the router (DELETE
+// /v1/agents/{id}), authenticating with the agent's capability key. The router
+// drops it from the agents set and deletes its config/filters/key, so it stops
+// being a routing/classify candidate. A 204 is success; any other status is an
+// error. This is the inverse of Register — the daemon/CLI calls it best-effort
+// when an agent is removed locally.
+func (c *Client) Deregister(ctx context.Context, id, key string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.base+"/v1/agents/"+id, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	return c.do(req, http.StatusNoContent)
+}
+
 // Mint asks the router for a fresh, unguessable agent id. The router signs it
 // with the deployment secret so it can't be forged or guessed; it's worthless
 // until Register binds it to a capability key.
