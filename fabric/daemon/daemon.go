@@ -6,6 +6,7 @@ import (
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
 	"github.com/ericpollmann/botbus-cli/fabric/control"
+	"github.com/ericpollmann/botbus-cli/fabric/profile"
 	"github.com/ericpollmann/botbus-proto/hubclient"
 	"github.com/mark3labs/mcp-go/server"
 	"golang.org/x/sync/errgroup"
@@ -22,16 +23,39 @@ type Daemon struct {
 	statePath string
 	hub       hubclient.HubClient
 	runtimes  map[string]*AgentRuntime
+
+	control *control.Client
+	profile *profile.Profile
+	mintKey func() string
+	domain  string
 }
 
-// New builds a Daemon from loaded state. statePath is where cursor advances are
-// persisted; hub is the (real or fake) hub client.
-func New(state *agentstate.State, statePath string, hub hubclient.HubClient) *Daemon {
-	rts := make(map[string]*AgentRuntime, len(state.Agents))
-	for _, a := range state.Agents {
+// Config is the full set of runtime collaborators.
+type Config struct {
+	State     *agentstate.State
+	StatePath string
+	Hub       hubclient.HubClient
+	Control   *control.Client
+	Profile   *profile.Profile
+	MintKey   func() string
+	Domain    string
+}
+
+// NewRuntime builds the single local-agent runtime from its collaborators.
+func NewRuntime(c Config) *Daemon {
+	rts := make(map[string]*AgentRuntime, len(c.State.Agents))
+	for _, a := range c.State.Agents {
 		rts[a.ID] = newRuntime(a.ID, 1000)
 	}
-	return &Daemon{state: state, statePath: statePath, hub: hub, runtimes: rts}
+	return &Daemon{
+		state: c.State, statePath: c.StatePath, hub: c.Hub, runtimes: rts,
+		control: c.Control, profile: c.Profile, mintKey: c.MintKey, domain: c.Domain,
+	}
+}
+
+// New is the back-compat constructor (inbox/MCP only; control built lazily in Run).
+func New(state *agentstate.State, statePath string, hub hubclient.HubClient) *Daemon {
+	return NewRuntime(Config{State: state, StatePath: statePath, Hub: hub})
 }
 
 // mux mounts one MCP endpoint per agent at /a/<key>. The unguessable capability
@@ -58,7 +82,10 @@ func (d *Daemon) Addr() string {
 // Run starts every agent's inbox + presence loops and serves the MCP mux until
 // ctx is cancelled.
 func (d *Daemon) Run(ctx context.Context) error {
-	ctl := control.NewClient(d.state.Daemon.RouterURL)
+	ctl := d.control
+	if ctl == nil {
+		ctl = control.NewClient(d.state.Daemon.RouterURL)
+	}
 	g, gctx := errgroup.WithContext(ctx)
 
 	for _, a := range d.state.Agents {
