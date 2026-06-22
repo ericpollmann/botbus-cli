@@ -76,7 +76,8 @@ func agentCmd(args []string) {
 		fs := flag.NewFlagSet("agent remove", flag.ExitOnError)
 		name := fs.String("name", "", "agent name to remove (required)")
 		_ = fs.Parse(args[1:])
-		agents, err := hostagent.List(agentstate.DefaultPath())
+		deps := realDeps()
+		agents, err := hostagent.List(deps.StatePath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "remove:", err)
 			os.Exit(1)
@@ -92,11 +93,15 @@ func agentCmd(args []string) {
 			fmt.Fprintln(os.Stderr, "remove: no local agent named", *name)
 			os.Exit(1)
 		}
-		if err := hostagent.Remove(agentstate.DefaultPath(), id); err != nil {
+		routerErr, err := hostagent.Remove(ctx, deps, id)
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "remove:", err)
 			os.Exit(1)
 		}
 		fmt.Printf("removed agent %q from local state\n", *name)
+		if routerErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: router deregister failed (registry entry will be reaped later): %v\n", routerErr)
+		}
 	default:
 		agentUsage()
 		os.Exit(2)
