@@ -2,12 +2,13 @@ package daemon
 
 import (
 	"context"
+	"net"
 	"net/http"
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
 	"github.com/ericpollmann/botbus-cli/fabric/control"
+	"github.com/ericpollmann/botbus-cli/fabric/profile"
 	"github.com/ericpollmann/botbus-proto/hubclient"
-	"github.com/mark3labs/mcp-go/server"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -22,16 +23,39 @@ type Daemon struct {
 	statePath string
 	hub       hubclient.HubClient
 	runtimes  map[string]*AgentRuntime
+
+	control *control.Client
+	profile *profile.Profile
+	mintKey func() string
+	domain  string
 }
 
-// New builds a Daemon from loaded state. statePath is where cursor advances are
-// persisted; hub is the (real or fake) hub client.
-func New(state *agentstate.State, statePath string, hub hubclient.HubClient) *Daemon {
-	rts := make(map[string]*AgentRuntime, len(state.Agents))
-	for _, a := range state.Agents {
+// Config is the full set of runtime collaborators.
+type Config struct {
+	State     *agentstate.State
+	StatePath string
+	Hub       hubclient.HubClient
+	Control   *control.Client
+	Profile   *profile.Profile
+	MintKey   func() string
+	Domain    string
+}
+
+// NewRuntime builds the single local-agent runtime from its collaborators.
+func NewRuntime(c Config) *Daemon {
+	rts := make(map[string]*AgentRuntime, len(c.State.Agents))
+	for _, a := range c.State.Agents {
 		rts[a.ID] = newRuntime(a.ID, 1000)
 	}
-	return &Daemon{state: state, statePath: statePath, hub: hub, runtimes: rts}
+	return &Daemon{
+		state: c.State, statePath: c.StatePath, hub: c.Hub, runtimes: rts,
+		control: c.Control, profile: c.Profile, mintKey: c.MintKey, domain: c.Domain,
+	}
+}
+
+// New is the back-compat constructor (inbox/MCP only; control built lazily in Run).
+func New(state *agentstate.State, statePath string, hub hubclient.HubClient) *Daemon {
+	return NewRuntime(Config{State: state, StatePath: statePath, Hub: hub})
 }
 
 // mux mounts one MCP endpoint per agent at /a/<key>. The unguessable capability
@@ -40,9 +64,8 @@ func (d *Daemon) mux() *http.ServeMux {
 	m := http.NewServeMux()
 	for _, a := range d.state.Agents {
 		path := "/a/" + a.Key
-		ag := &agentMCP{rt: d.runtimes[a.ID], hub: d.hub, outbound: d.state.Daemon.OutboundChannel, from: a.Name}
-		s := buildMCPServer(ag)
-		m.Handle(path, server.NewStreamableHTTPServer(s, server.WithEndpointPath(path)))
+		ag := &agentMCP{ops: d, agentID: a.ID, from: a.Name}
+		m.Handle(path, newAgentHandler(ag, path))
 	}
 	return m
 }
@@ -55,12 +78,14 @@ func (d *Daemon) Addr() string {
 	return DefaultMCPAddr
 }
 
-// Run starts every agent's inbox + presence loops and serves the MCP mux until
-// ctx is cancelled.
-func (d *Daemon) Run(ctx context.Context) error {
-	ctl := control.NewClient(d.state.Daemon.RouterURL)
+// RunOn starts inbox/presence loops and serves the MCP mux on a pre-bound
+// listener (so the caller can hold the port as a single-runtime mutex).
+func (d *Daemon) RunOn(ctx context.Context, ln net.Listener) error {
+	ctl := d.control
+	if ctl == nil {
+		ctl = control.NewClient(d.state.Daemon.RouterURL)
+	}
 	g, gctx := errgroup.WithContext(ctx)
-
 	for _, a := range d.state.Agents {
 		a := a
 		rt := d.runtimes[a.ID]
@@ -72,15 +97,24 @@ func (d *Daemon) Run(ctx context.Context) error {
 		})
 		g.Go(func() error { runPresence(gctx, ctl, a); return nil })
 	}
-
-	srv := &http.Server{Addr: d.Addr(), Handler: d.mux()}
+	srv := &http.Server{Handler: d.mux()}
 	g.Go(func() error {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			return err
 		}
 		return nil
 	})
-	g.Go(func() error { <-gctx.Done(); return srv.Close() })
-
+	// Close on cancel; ignore Close's own error so it can't mask the cause that
+	// cancelled gctx (which is the error g.Wait() should surface).
+	g.Go(func() error { <-gctx.Done(); _ = srv.Close(); return nil })
 	return g.Wait()
+}
+
+// Run binds Addr() itself, then delegates to RunOn (back-compat).
+func (d *Daemon) Run(ctx context.Context) error {
+	ln, err := net.Listen("tcp", d.Addr())
+	if err != nil {
+		return err
+	}
+	return d.RunOn(ctx, ln)
 }

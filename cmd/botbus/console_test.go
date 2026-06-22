@@ -1,11 +1,61 @@
 package main
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
+	"github.com/ericpollmann/botbus-cli/fabric/daemon"
 	"github.com/ericpollmann/botbus-proto/wire"
 )
+
+// stubConsoleOps implements daemon.Ops for unit-testing the TUI helpers.
+// It records call arguments and returns canned values for the used methods;
+// unused methods return zero values.
+type stubConsoleOps struct {
+	conn daemon.ConnectInstructions
+	// recorded args from CreateChild
+	gotName  string
+	gotFocus string
+}
+
+func (s *stubConsoleOps) Roster(_ context.Context) ([]wire.AgentNode, error) {
+	return nil, nil
+}
+
+func (s *stubConsoleOps) CreateChild(_ context.Context, name, focus string) (agentstate.Agent, daemon.ConnectInstructions, error) {
+	s.gotName = name
+	s.gotFocus = focus
+	return agentstate.Agent{}, s.conn, nil
+}
+
+func (s *stubConsoleOps) Send(_ context.Context, _ string, _ daemon.SendArgs) error {
+	return nil
+}
+
+func (s *stubConsoleOps) ReadInbox(_ context.Context, _ string, _ int) (string, error) {
+	return "", nil
+}
+
+func (s *stubConsoleOps) EnsureRoot(_ context.Context) (agentstate.Agent, error) {
+	return agentstate.Agent{}, nil
+}
+
+func TestOnboardChildOpsReturnsMCPInstruction(t *testing.T) {
+	ops := &stubConsoleOps{conn: daemon.ConnectInstructions{
+		MCPCommand: "claude mcp add --transport http botbus-cli http://127.0.0.1:8765/a/k",
+		ChannelURL: "https://chan.botbus.ai/",
+	}}
+	msg, err := onboardChildOps(context.Background(), ops, "botbus-cli", "the CLI")
+	if err != nil {
+		t.Fatalf("onboardChildOps: %v", err)
+	}
+	if !strings.Contains(msg, "claude mcp add") {
+		t.Fatalf("expected MCP-first instruction, got %q", msg)
+	}
+}
 
 func updRoster(m rosterModel, msg tea.Msg) (rosterModel, bool) {
 	return m.updateRoster(msg)

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
+	"github.com/ericpollmann/botbus-cli/fabric/control"
 	"github.com/ericpollmann/botbus-proto/hubclient"
 )
 
@@ -45,5 +46,24 @@ func TestAddrDefaults(t *testing.T) {
 	d2 := New(&agentstate.State{Daemon: agentstate.Daemon{MCPAddr: "127.0.0.1:9999"}}, "", hubclient.NewFake())
 	if d2.Addr() != "127.0.0.1:9999" {
 		t.Fatalf("Addr = %q, want override", d2.Addr())
+	}
+}
+
+func TestNewRuntimeWiresFields(t *testing.T) {
+	st := &agentstate.State{Daemon: agentstate.Daemon{MCPAddr: "127.0.0.1:0"}}
+	d := NewRuntime(Config{
+		State: st, StatePath: "/tmp/x.json", Hub: hubclient.NewFake(),
+		Control: control.NewClient("http://r"), MintKey: func() string { return "k" },
+		Domain: "botbus.ai",
+	})
+	if d.domain != "botbus.ai" || d.mintKey == nil || d.control == nil {
+		t.Fatalf("NewRuntime did not wire fields: %+v", d)
+	}
+	if d.Addr() != "127.0.0.1:0" {
+		t.Fatalf("Addr=%q", d.Addr())
+	}
+	// Back-compat: New still constructs a usable Daemon.
+	if New(st, "/tmp/x.json", hubclient.NewFake()) == nil {
+		t.Fatal("New returned nil")
 	}
 }
