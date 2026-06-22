@@ -91,3 +91,14 @@ func (d *Daemon) Send(ctx context.Context, fromAgent, body string, to []string, 
 		Body: body, To: to, Kind: kind,
 	})
 }
+
+// ReadInbox long-polls one agent's inbox queue (the op behind MCP `next`),
+// returning the queued envelopes as a JSON array string. Errors if agentID is
+// not a managed runtime.
+func (d *Daemon) ReadInbox(ctx context.Context, agentID string, timeoutSec int) (string, error) {
+	rt, ok := d.runtimes[agentID]
+	if !ok {
+		return "", fmt.Errorf("unknown agent id %q", agentID)
+	}
+	return Next(ctx, rt, timeoutSec), nil
+}

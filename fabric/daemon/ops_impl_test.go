@@ -225,6 +225,25 @@ func TestSendPublishesToOutbound(t *testing.T) {
 	}
 }
 
+func TestReadInboxUnknownAgentErrors(t *testing.T) {
+	d := NewRuntime(Config{State: &agentstate.State{}, Hub: hubclient.NewFake()})
+	if _, err := d.ReadInbox(context.Background(), "nope", 1); err == nil {
+		t.Fatal("expected error for unknown agent id")
+	}
+}
+
+func TestReadInboxEmptyOnTimeout(t *testing.T) {
+	st := &agentstate.State{Agents: []agentstate.Agent{{ID: "a1", Name: "a"}}}
+	d := NewRuntime(Config{State: st, Hub: hubclient.NewFake()})
+	out, err := d.ReadInbox(context.Background(), "a1", 1) // 1s, nothing queued
+	if err != nil {
+		t.Fatalf("ReadInbox: %v", err)
+	}
+	if out != "[]" {
+		t.Fatalf("want empty json array, got %q", out)
+	}
+}
+
 // stubRoster serves GET /v1/agents, returning one "root" node only when the
 // request carries the expected X-Agent-Id + Bearer key.
 func stubRoster(t *testing.T, wantID, wantKey string) *httptest.Server {
