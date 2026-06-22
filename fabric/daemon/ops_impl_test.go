@@ -216,7 +216,7 @@ func TestSendPublishesToOutbound(t *testing.T) {
 	fake := hubclient.NewFake()
 	st := &agentstate.State{Daemon: agentstate.Daemon{OutboundChannel: "outchan"}}
 	d := NewRuntime(Config{State: st, Hub: fake})
-	if err := d.Send(context.Background(), "root", "hi botbus-cli", []string{"botbus-cli"}, "dm"); err != nil {
+	if err := d.Send(context.Background(), "root", SendArgs{Body: "hi botbus-cli", To: []string{"botbus-cli"}, Kind: "dm"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	msgs := fake.Published("outchan")

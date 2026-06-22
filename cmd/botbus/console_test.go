@@ -31,7 +31,7 @@ func (s *stubConsoleOps) CreateChild(_ context.Context, name, focus string) (age
 	return agentstate.Agent{}, s.conn, nil
 }
 
-func (s *stubConsoleOps) Send(_ context.Context, _, _ string, _ []string, _ string) error {
+func (s *stubConsoleOps) Send(_ context.Context, _ string, _ daemon.SendArgs) error {
 	return nil
 }
 

@@ -24,20 +24,19 @@ func callText(t *testing.T, res *mcp.CallToolResult) string {
 
 // fakeOps records calls so we can assert the tools route through Ops.
 type fakeOps struct {
-	sentFrom, sentBody string
-	sentTo             []string
-	readID             string
-	sendErr            error
-	readErr            error
+	sentFrom    string
+	sentArgs    SendArgs
+	readID      string
+	sendErr     error
+	readErr     error
 }
 
 func (f *fakeOps) Roster(_ context.Context) ([]wire.AgentNode, error) { return nil, nil }
 func (f *fakeOps) CreateChild(_ context.Context, _, _ string) (agentstate.Agent, ConnectInstructions, error) {
 	return agentstate.Agent{}, ConnectInstructions{}, nil
 }
-func (f *fakeOps) Send(_ context.Context, from, body string, to []string, kind string) error {
-	f.sentFrom, f.sentBody, f.sentTo = from, body, to
-	_ = kind
+func (f *fakeOps) Send(_ context.Context, from string, args SendArgs) error {
+	f.sentFrom, f.sentArgs = from, args
 	return f.sendErr
 }
 func (f *fakeOps) ReadInbox(_ context.Context, id string, _ int) (string, error) {
@@ -52,12 +51,21 @@ func TestToolSendRoutesThroughOps(t *testing.T) {
 	f := &fakeOps{}
 	ag := &agentMCP{ops: f, agentID: "a1", from: "alice"}
 	req := mcp.CallToolRequest{}
-	req.Params.Arguments = map[string]any{"body": "hello", "to": "bob", "kind": "dm"}
+	req.Params.Arguments = map[string]any{"body": "hello", "to": "bob", "kind": "dm", "subject": "sum"}
 	if _, err := ag.toolSend(context.Background(), req); err != nil {
 		t.Fatalf("toolSend: %v", err)
 	}
-	if f.sentFrom != "alice" || f.sentBody != "hello" || len(f.sentTo) != 1 || f.sentTo[0] != "bob" {
-		t.Fatalf("ops not called correctly: %+v", f)
+	if f.sentFrom != "alice" {
+		t.Fatalf("from not forwarded: got %q want alice", f.sentFrom)
+	}
+	if f.sentArgs.Body != "hello" {
+		t.Fatalf("body not forwarded: got %q want hello", f.sentArgs.Body)
+	}
+	if len(f.sentArgs.To) != 1 || f.sentArgs.To[0] != "bob" {
+		t.Fatalf("to not forwarded: got %v want [bob]", f.sentArgs.To)
+	}
+	if f.sentArgs.Subject != "sum" {
+		t.Fatalf("subject not forwarded: got %q want sum", f.sentArgs.Subject)
 	}
 }
 
@@ -72,7 +80,7 @@ func TestToolNextRoutesThroughOps(t *testing.T) {
 	}
 }
 
-func TestToolSendReturnsError(t *testing.T) {
+func TestToolSendReturnsSent(t *testing.T) {
 	f := &fakeOps{}
 	ag := &agentMCP{ops: f, agentID: "a1", from: "alice"}
 	// No "body" arg — GetString returns "" which is valid; test the "sent" result.

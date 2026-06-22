@@ -87,12 +87,10 @@ func (d *Daemon) Roster(ctx context.Context) ([]wire.AgentNode, error) {
 }
 
 // Send publishes a message as fromAgent to the daemon's outbound source channel
-// (the router routes it). `to` sets the envelope To for direct addressing; kind
-// defaults to chat when empty.
-func (d *Daemon) Send(ctx context.Context, fromAgent, body string, to []string, kind string) error {
-	return Send(ctx, d.hub, d.state.Daemon.OutboundChannel, fromAgent, SendArgs{
-		Body: body, To: to, Kind: kind,
-	})
+// (the router routes it). args carries the full wire fields (body, to, kind,
+// subject, scope); kind defaults to chat when empty.
+func (d *Daemon) Send(ctx context.Context, fromAgent string, args SendArgs) error {
+	return Send(ctx, d.hub, d.state.Daemon.OutboundChannel, fromAgent, args)
 }
 
 // ReadInbox long-polls one agent's inbox queue (the op behind MCP `next`),

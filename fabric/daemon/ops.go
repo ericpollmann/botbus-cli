@@ -22,7 +22,7 @@ type ConnectInstructions struct {
 type Ops interface {
 	Roster(ctx context.Context) ([]wire.AgentNode, error)
 	CreateChild(ctx context.Context, name, focus string) (agentstate.Agent, ConnectInstructions, error)
-	Send(ctx context.Context, fromAgent, body string, to []string, kind string) error
+	Send(ctx context.Context, fromAgent string, args SendArgs) error
 	ReadInbox(ctx context.Context, agentID string, timeoutSec int) (string, error)
 	EnsureRoot(ctx context.Context) (agentstate.Agent, error)
 }

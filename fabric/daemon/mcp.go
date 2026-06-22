@@ -48,11 +48,15 @@ func (ag *agentMCP) toolNext(ctx context.Context, req mcp.CallToolRequest) (*mcp
 }
 
 func (ag *agentMCP) toolSend(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	var to []string
-	if s := req.GetString("to", ""); s != "" {
-		to = splitComma(s)
+	args := SendArgs{
+		Body:    req.GetString("body", ""),
+		Kind:    req.GetString("kind", ""),
+		Subject: req.GetString("subject", ""),
 	}
-	if err := ag.ops.Send(ctx, ag.from, req.GetString("body", ""), to, req.GetString("kind", "")); err != nil {
+	if s := req.GetString("to", ""); s != "" {
+		args.To = splitComma(s)
+	}
+	if err := ag.ops.Send(ctx, ag.from, args); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	return mcp.NewToolResultText("sent"), nil
