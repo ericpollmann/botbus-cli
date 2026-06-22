@@ -18,8 +18,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/ericpollmann/botbus-cli/fabric/console"
-	"github.com/ericpollmann/botbus-cli/fabric/hostagent"
+	"github.com/ericpollmann/botbus-cli/fabric/daemon"
 	"github.com/ericpollmann/botbus-cli/fabric/profile"
 	"github.com/ericpollmann/botbus-proto/wire"
 )
@@ -163,12 +162,12 @@ func (m rosterModel) View() string {
 	return b.String()
 }
 
-// firstRun is the one-time operator setup: prompt for the operator's name and
-// the standing framing (read from in, prompts written to out), mint the root
-// agent via hostagent.CreateRoot, persist the profile, and return it. Factored
-// pure (io.Reader/io.Writer + injected hostagent.Deps + an explicit profile
-// path) so it's unit-testable with a strings.Reader + fake deps.
-func firstRun(in io.Reader, out io.Writer, deps hostagent.Deps, profilePath string) (*profile.Profile, error) {
+// firstRunOps is the one-time operator setup: prompt for the operator's name
+// and the standing framing (read from in, prompts written to out), mint the
+// root agent via ops.EnsureRoot, persist the profile, and return it. Factored
+// pure (io.Reader/io.Writer + injected daemon.Ops + an explicit profile path)
+// so it's unit-testable.
+func firstRunOps(in io.Reader, out io.Writer, ops daemon.Ops, profilePath string) (*profile.Profile, error) {
 	r := bufio.NewReader(in)
 	fmt.Fprintln(out, "Welcome to the botbus console — one-time setup.")
 	fmt.Fprint(out, "Your name: ")
@@ -190,8 +189,8 @@ func firstRun(in io.Reader, out io.Writer, deps hostagent.Deps, profilePath stri
 	// EnsureRoot (not CreateRoot) so a first-run that minted a local root but
 	// then failed to Register (flaky router) is idempotent: the next run reuses
 	// the existing local root and re-registers it instead of dying with "already
-	// exists". See hostagent.EnsureRoot.
-	root, err := hostagent.EnsureRoot(context.Background(), deps)
+	// exists".
+	root, err := ops.EnsureRoot(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("create root agent: %w", err)
 	}
@@ -222,24 +221,14 @@ func readLine(r *bufio.Reader) (string, error) {
 	return strings.TrimRight(line, "\r\n"), nil
 }
 
-// onboardChild mints + registers a new child agent under the operator's root,
-// seeds its welcome message into its inbox, and returns the connect URL the
-// operator hands to the agent. Factored out of the TUI so it's unit-testable
-// with fake deps (assert child created with Parent=root + welcome published).
-func onboardChild(ctx context.Context, deps hostagent.Deps, p *profile.Profile, name, focus string) (connectURL string, err error) {
-	child, err := hostagent.Create(ctx, deps, hostagent.CreateOpts{
-		Name:   name,
-		Focus:  focus,
-		Parent: p.Root.ID,
-	})
+// onboardChildOps creates a child via the shared Ops core and returns the
+// operator-facing connect instruction (MCP-first, channel URL fallback).
+func onboardChildOps(ctx context.Context, ops daemon.Ops, name, focus string) (string, error) {
+	_, inst, err := ops.CreateChild(ctx, name, focus)
 	if err != nil {
-		return "", fmt.Errorf("create child: %w", err)
+		return "", err
 	}
-	welcome := console.RenderWelcome(child.Name, focus, "root", p)
-	if err := console.SeedWelcome(ctx, deps.Hub, child.InboxChannel, welcome); err != nil {
-		return "", fmt.Errorf("seed welcome: %w", err)
-	}
-	return fmt.Sprintf("https://%s.%s", child.InboxChannel, domain), nil
+	return inst.MCPCommand + "\n(or raw: " + inst.ChannelURL + ")", nil
 }
 
 // runConsole is the no-args entrypoint: load (or first-run create) the operator
@@ -259,16 +248,20 @@ func runConsole() {
 		fmt.Fprintln(os.Stderr, "profile:", err)
 		os.Exit(1)
 	}
+
+	// Build the one runtime (Ops + faces share it). buildRuntime is defined in
+	// cmd/botbus/runtime.go (Task 9 adds the single-runtime guard).
+	rt := buildRuntime(p)
 	if !p.Configured() {
-		p, err = firstRun(os.Stdin, os.Stdout, realDeps(), profilePath)
+		p, err = firstRunOps(os.Stdin, os.Stdout, rt, profilePath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "setup:", err)
 			os.Exit(1)
 		}
+		rt = buildRuntime(p) // rebuild with the now-populated profile
 	}
 
-	deps := realDeps()
-	nodes, err := deps.Control.Roster(ctx, p.Root.ID, p.Root.Key)
+	nodes, err := rt.Roster(ctx)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "roster unavailable (is the router deployed?):", err)
 		// Fall back to a single-node roster (just the root) so the console still
@@ -281,7 +274,7 @@ func runConsole() {
 	}
 
 	m := newConsoleModel(nodes)
-	wireConsoleChat(ctx, &m, p)
+	wireConsoleChat(ctx, &m, p, rt) // onboard closure now calls onboardChildOps(ctx, rt, ...)
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -293,7 +286,7 @@ func runConsole() {
 // channel and returns the fresh transport channels for Update to bind; stopChat
 // cancels that WS. The cancel is shared between the two closures via a captured
 // variable so stopChat can tear down whatever startChat last opened.
-func wireConsoleChat(parent context.Context, m *model, p *profile.Profile) {
+func wireConsoleChat(parent context.Context, m *model, p *profile.Profile, ops daemon.Ops) {
 	var cancel context.CancelFunc
 	name := resolveName()
 	m.startChat = func(channel string) chatSession {
@@ -330,6 +323,7 @@ func wireConsoleChat(parent context.Context, m *model, p *profile.Profile) {
 		}
 	}
 	m.onboard = func(name, focus string) (string, error) {
-		return onboardChild(context.Background(), realDeps(), p, name, focus)
+		return onboardChildOps(context.Background(), ops, name, focus)
 	}
+	_ = p // retained for future profile-dependent wiring (e.g. display name injection)
 }
