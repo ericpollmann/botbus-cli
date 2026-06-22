@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
+	"github.com/ericpollmann/botbus-cli/fabric/console"
 	"github.com/ericpollmann/botbus-cli/fabric/hostagent"
 	"github.com/ericpollmann/botbus-proto/wire"
 )
@@ -45,6 +46,32 @@ func (d *Daemon) hostDeps() hostagent.Deps {
 // EnsureRoot creates the workspace root on first run, else reuses + re-registers it.
 func (d *Daemon) EnsureRoot(ctx context.Context) (agentstate.Agent, error) {
 	return hostagent.EnsureRoot(ctx, d.hostDeps())
+}
+
+// CreateChild registers a sub-agent under root (mint id + inbox channel +
+// register with Parent + seed welcome) and returns MCP-first connect
+// instructions. It does NOT spawn a process (see spec Follow-ups).
+func (d *Daemon) CreateChild(ctx context.Context, name, focus string) (agentstate.Agent, ConnectInstructions, error) {
+	r, err := d.root()
+	if err != nil {
+		return agentstate.Agent{}, ConnectInstructions{}, err
+	}
+	child, err := hostagent.Create(ctx, d.hostDeps(), hostagent.CreateOpts{
+		Name: name, Focus: focus, Parent: r.ID,
+	})
+	if err != nil {
+		return agentstate.Agent{}, ConnectInstructions{}, fmt.Errorf("create child: %w", err)
+	}
+	welcome := console.RenderWelcome(child.Name, focus, "root", d.profile)
+	if err := console.SeedWelcome(ctx, d.hub, child.InboxChannel, welcome); err != nil {
+		return agentstate.Agent{}, ConnectInstructions{}, fmt.Errorf("seed welcome: %w", err)
+	}
+	endpoint := fmt.Sprintf("http://%s/a/%s", d.Addr(), child.Key)
+	return child, ConnectInstructions{
+		MCPCommand:  fmt.Sprintf("claude mcp add --transport http %s %s", child.Name, endpoint),
+		MCPEndpoint: endpoint,
+		ChannelURL:  fmt.Sprintf("https://%s.%s/", child.InboxChannel, d.domain),
+	}, nil
 }
 
 // Roster returns the agent tree (parent links + liveness) as the root.

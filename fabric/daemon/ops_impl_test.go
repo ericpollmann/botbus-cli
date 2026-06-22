@@ -180,6 +180,38 @@ func stubAcceptAll(t *testing.T) *httptest.Server {
 	}))
 }
 
+func TestCreateChildSeedsWelcomeAndBuildsInstructions(t *testing.T) {
+	dir := t.TempDir()
+	srv := stubAcceptAll(t)
+	defer srv.Close()
+	fake := hubclient.NewFake()
+	prof := &profile.Profile{User: "Eric", Framing: "we ship",
+		Root: profile.Root{ID: "root-id", Key: "root-key", InboxChannel: "rootchan"}}
+	st := &agentstate.State{Agents: []agentstate.Agent{{ID: "root-id", Key: "root-key", Name: "root"}},
+		Daemon: agentstate.Daemon{MCPAddr: "127.0.0.1:8765"}}
+	d := NewRuntime(Config{State: st, StatePath: dir + "/state.json", Hub: fake,
+		Control: control.NewClient(srv.URL), Profile: prof,
+		MintKey: func() string { return "childkey" }, Domain: "botbus.ai"})
+
+	child, inst, err := d.CreateChild(context.Background(), "botbus-cli", "the CLI")
+	if err != nil {
+		t.Fatalf("CreateChild: %v", err)
+	}
+	if child.Parent != "root-id" {
+		t.Fatalf("child.Parent=%q want root-id", child.Parent)
+	}
+	if inst.MCPCommand == "" || inst.MCPEndpoint != "http://127.0.0.1:8765/a/childkey" {
+		t.Fatalf("instructions=%+v", inst)
+	}
+	if inst.ChannelURL != "https://"+child.InboxChannel+".botbus.ai/" {
+		t.Fatalf("channelURL=%q", inst.ChannelURL)
+	}
+	// Welcome was published to the child's inbox channel.
+	if got := fake.Published(child.InboxChannel); len(got) == 0 {
+		t.Fatalf("no welcome seeded to %s", child.InboxChannel)
+	}
+}
+
 // stubRoster serves GET /v1/agents, returning one "root" node only when the
 // request carries the expected X-Agent-Id + Bearer key.
 func stubRoster(t *testing.T, wantID, wantKey string) *httptest.Server {
