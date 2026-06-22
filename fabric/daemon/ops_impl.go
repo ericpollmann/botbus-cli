@@ -82,3 +82,12 @@ func (d *Daemon) Roster(ctx context.Context) ([]wire.AgentNode, error) {
 	}
 	return d.control.Roster(ctx, r.ID, r.Key)
 }
+
+// Send publishes a message as fromAgent to the daemon's outbound source channel
+// (the router routes it). `to` sets the envelope To for direct addressing; kind
+// defaults to chat when empty.
+func (d *Daemon) Send(ctx context.Context, fromAgent, body string, to []string, kind string) error {
+	return Send(ctx, d.hub, d.state.Daemon.OutboundChannel, fromAgent, SendArgs{
+		Body: body, To: to, Kind: kind,
+	})
+}

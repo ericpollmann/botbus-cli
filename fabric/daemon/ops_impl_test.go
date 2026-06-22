@@ -212,6 +212,19 @@ func TestCreateChildSeedsWelcomeAndBuildsInstructions(t *testing.T) {
 	}
 }
 
+func TestSendPublishesToOutbound(t *testing.T) {
+	fake := hubclient.NewFake()
+	st := &agentstate.State{Daemon: agentstate.Daemon{OutboundChannel: "outchan"}}
+	d := NewRuntime(Config{State: st, Hub: fake})
+	if err := d.Send(context.Background(), "root", "hi botbus-cli", []string{"botbus-cli"}, "dm"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	msgs := fake.Published("outchan")
+	if len(msgs) != 1 {
+		t.Fatalf("published=%v", msgs)
+	}
+}
+
 // stubRoster serves GET /v1/agents, returning one "root" node only when the
 // request carries the expected X-Agent-Id + Bearer key.
 func stubRoster(t *testing.T, wantID, wantKey string) *httptest.Server {
