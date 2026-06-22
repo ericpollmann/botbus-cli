@@ -9,6 +9,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -282,8 +283,14 @@ func runConsole() {
 		os.Exit(1)
 	}
 	// Start inbox loops + MCP mux in the background; TUI runs in the foreground.
-	// When the TUI exits the signal/ctx cancel tears down runAll.
-	go func() { _ = runAll(ctx, rt, ln) }()
+	// When the TUI exits the signal/ctx cancel tears down runAll (→ context.Canceled,
+	// the normal exit). Surface any OTHER error to stderr so a mid-session serve
+	// failure isn't swallowed, leaving the TUI running with no MCP face.
+	go func() {
+		if err := runAll(ctx, rt, ln); err != nil && !errors.Is(err, context.Canceled) {
+			fmt.Fprintln(os.Stderr, "botbus: runtime faces stopped:", err)
+		}
+	}()
 
 	m := newConsoleModel(nodes)
 	wireConsoleChat(ctx, &m, rt) // onboard closure now calls onboardChildOps(ctx, rt, ...)

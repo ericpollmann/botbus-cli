@@ -104,7 +104,9 @@ func (d *Daemon) RunOn(ctx context.Context, ln net.Listener) error {
 		}
 		return nil
 	})
-	g.Go(func() error { <-gctx.Done(); return srv.Close() })
+	// Close on cancel; ignore Close's own error so it can't mask the cause that
+	// cancelled gctx (which is the error g.Wait() should surface).
+	g.Go(func() error { <-gctx.Done(); _ = srv.Close(); return nil })
 	return g.Wait()
 }
 
