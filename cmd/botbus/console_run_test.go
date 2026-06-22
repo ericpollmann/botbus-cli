@@ -500,11 +500,10 @@ func TestStaleEpochMessagesAreDropped(t *testing.T) {
 // dip must be a no-op (no panic on nil cancel).
 func TestWireConsoleChatHooksInstalled(t *testing.T) {
 	m := newConsoleModel(nil)
-	p := &profile.Profile{User: "eric", Root: profile.Root{ID: "root", InboxChannel: "in", Key: "k"}}
 	hub := hubclient.NewFake()
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	ops := fakeOps(t, hub, statePath)
-	wireConsoleChat(context.Background(), &m, p, ops)
+	wireConsoleChat(context.Background(), &m, ops)
 	if m.startChat == nil || m.stopChat == nil || m.onboard == nil {
 		t.Fatal("wireConsoleChat should install all three hooks")
 	}

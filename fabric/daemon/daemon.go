@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"net"
 	"net/http"
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
@@ -77,15 +78,14 @@ func (d *Daemon) Addr() string {
 	return DefaultMCPAddr
 }
 
-// Run starts every agent's inbox + presence loops and serves the MCP mux until
-// ctx is cancelled.
-func (d *Daemon) Run(ctx context.Context) error {
+// RunOn starts inbox/presence loops and serves the MCP mux on a pre-bound
+// listener (so the caller can hold the port as a single-runtime mutex).
+func (d *Daemon) RunOn(ctx context.Context, ln net.Listener) error {
 	ctl := d.control
 	if ctl == nil {
 		ctl = control.NewClient(d.state.Daemon.RouterURL)
 	}
 	g, gctx := errgroup.WithContext(ctx)
-
 	for _, a := range d.state.Agents {
 		a := a
 		rt := d.runtimes[a.ID]
@@ -97,15 +97,22 @@ func (d *Daemon) Run(ctx context.Context) error {
 		})
 		g.Go(func() error { runPresence(gctx, ctl, a); return nil })
 	}
-
-	srv := &http.Server{Addr: d.Addr(), Handler: d.mux()}
+	srv := &http.Server{Handler: d.mux()}
 	g.Go(func() error {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			return err
 		}
 		return nil
 	})
 	g.Go(func() error { <-gctx.Done(); return srv.Close() })
-
 	return g.Wait()
+}
+
+// Run binds Addr() itself, then delegates to RunOn (back-compat).
+func (d *Daemon) Run(ctx context.Context) error {
+	ln, err := net.Listen("tcp", d.Addr())
+	if err != nil {
+		return err
+	}
+	return d.RunOn(ctx, ln)
 }

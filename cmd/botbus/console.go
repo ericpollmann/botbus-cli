@@ -273,8 +273,20 @@ func runConsole() {
 		}}
 	}
 
+	// Bind the MCP port before launching the TUI — a conflict fails fast with a
+	// clean message rather than mid-UI, and holds the port as the single-runtime
+	// mutex for the entire session.
+	ln, err := ensureSingleRuntime(rt.Addr())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	// Start inbox loops + MCP mux in the background; TUI runs in the foreground.
+	// When the TUI exits the signal/ctx cancel tears down runAll.
+	go func() { _ = runAll(ctx, rt, ln) }()
+
 	m := newConsoleModel(nodes)
-	wireConsoleChat(ctx, &m, p, rt) // onboard closure now calls onboardChildOps(ctx, rt, ...)
+	wireConsoleChat(ctx, &m, rt) // onboard closure now calls onboardChildOps(ctx, rt, ...)
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -286,7 +298,7 @@ func runConsole() {
 // channel and returns the fresh transport channels for Update to bind; stopChat
 // cancels that WS. The cancel is shared between the two closures via a captured
 // variable so stopChat can tear down whatever startChat last opened.
-func wireConsoleChat(parent context.Context, m *model, p *profile.Profile, ops daemon.Ops) {
+func wireConsoleChat(parent context.Context, m *model, ops daemon.Ops) {
 	var cancel context.CancelFunc
 	name := resolveName()
 	m.startChat = func(channel string) chatSession {
@@ -325,5 +337,4 @@ func wireConsoleChat(parent context.Context, m *model, p *profile.Profile, ops d
 	m.onboard = func(name, focus string) (string, error) {
 		return onboardChildOps(context.Background(), ops, name, focus)
 	}
-	_ = p // retained for future profile-dependent wiring (e.g. display name injection)
 }
