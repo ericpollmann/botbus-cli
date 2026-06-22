@@ -1,6 +1,7 @@
 package agentstate
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -105,5 +106,245 @@ func TestUpsertGetRemove(t *testing.T) {
 	}
 	if len(s.Agents) != 1 || s.Agents[0].ID != "b" {
 		t.Fatalf("after remove, agents = %+v", s.Agents)
+	}
+}
+
+// TestSaveCreatesBackupOfPriorVersion verifies that overwriting an existing
+// state file first copies the prior contents to state.json.bak, so an
+// accidental wipe of the live file is recoverable from the backup.
+func TestSaveCreatesBackupOfPriorVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	v1 := &State{Agents: []Agent{{ID: "a", Key: "k1", InboxChannel: "i"}}}
+	v2 := &State{Agents: []Agent{
+		{ID: "a", Key: "k1", InboxChannel: "i"},
+		{ID: "b", Key: "k2", InboxChannel: "j"},
+	}}
+	if err := Save(path, v1); err != nil {
+		t.Fatalf("save v1: %v", err)
+	}
+	if err := Save(path, v2); err != nil {
+		t.Fatalf("save v2: %v", err)
+	}
+
+	bak, err := Load(path + ".bak")
+	if err != nil {
+		t.Fatalf("load backup: %v", err)
+	}
+	if len(bak.Agents) != 1 || bak.Agents[0].ID != "a" || bak.Agents[0].Key != "k1" {
+		t.Fatalf("backup should hold the prior version (v1), got %+v", bak.Agents)
+	}
+	cur, _ := Load(path)
+	if len(cur.Agents) != 2 {
+		t.Fatalf("current file should be v2, got %+v", cur.Agents)
+	}
+}
+
+// TestSaveFirstWriteCreatesNoBackup verifies there is nothing to back up on the
+// very first write, so no backup file is produced.
+func TestSaveFirstWriteCreatesNoBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := Save(path, &State{Agents: []Agent{{ID: "a", InboxChannel: "i"}}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if _, err := os.Stat(path + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("first save must not create a backup; stat err = %v", err)
+	}
+}
+
+// TestSaveRotatesBackupGenerations verifies that successive saves rotate a
+// small, bounded number of backup generations and drop the oldest.
+func TestSaveRotatesBackupGenerations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	for i := 1; i <= 5; i++ {
+		s := &State{
+			Daemon: Daemon{RouterURL: fmt.Sprintf("v%d", i)},
+			Agents: []Agent{{ID: "a", InboxChannel: "i"}},
+		}
+		if err := Save(path, s); err != nil {
+			t.Fatalf("save v%d: %v", i, err)
+		}
+	}
+
+	// Three generations are retained; the live file is v5, so the backups hold
+	// v4 (most recent), v3, and v2. v1 has aged out.
+	for f, want := range map[string]string{
+		path + ".bak":   "v4",
+		path + ".bak.1": "v3",
+		path + ".bak.2": "v2",
+	} {
+		got, err := Load(f)
+		if err != nil {
+			t.Fatalf("load %s: %v", f, err)
+		}
+		if got.Daemon.RouterURL != want {
+			t.Fatalf("%s = %q, want %q", f, got.Daemon.RouterURL, want)
+		}
+	}
+	if _, err := os.Stat(path + ".bak.3"); !os.IsNotExist(err) {
+		t.Fatalf("oldest generation should be dropped; .bak.3 stat err = %v", err)
+	}
+	if cur, _ := Load(path); cur.Daemon.RouterURL != "v5" {
+		t.Fatalf("live file = %q, want v5", cur.Daemon.RouterURL)
+	}
+}
+
+// TestSaveBackupUsesOwnerOnlyPermissions verifies the backup is as locked-down
+// as the live file (0600) — it contains the same agent capability keys.
+func TestSaveBackupUsesOwnerOnlyPermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := Save(path, &State{Agents: []Agent{{ID: "a", InboxChannel: "i"}}}); err != nil {
+		t.Fatalf("save v1: %v", err)
+	}
+	if err := Save(path, &State{Agents: []Agent{{ID: "a", InboxChannel: "i"}, {ID: "b", InboxChannel: "j"}}}); err != nil {
+		t.Fatalf("save v2: %v", err)
+	}
+	info, err := os.Stat(path + ".bak")
+	if err != nil {
+		t.Fatalf("stat backup: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("backup perm = %o, want 600 (it holds secret keys)", perm)
+	}
+}
+
+// TestSaveReadExistingError verifies Save surfaces an error when the existing
+// state path cannot be read (here it is a directory).
+func TestSaveReadExistingError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := Save(path, &State{Agents: []Agent{{ID: "a", InboxChannel: "i"}}}); err == nil {
+		t.Fatal("Save should error when the existing state path is unreadable")
+	}
+}
+
+// TestSaveMkdirError verifies Save surfaces an error when the parent directory
+// cannot be created.
+func TestSaveMkdirError(t *testing.T) {
+	roParent := filepath.Join(t.TempDir(), "ro")
+	if err := os.Mkdir(roParent, 0o500); err != nil {
+		t.Fatalf("mkdir ro: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(roParent, 0o700) })
+	path := filepath.Join(roParent, "sub", "state.json")
+	if err := Save(path, &State{Agents: []Agent{{ID: "a", InboxChannel: "i"}}}); err == nil {
+		t.Fatal("Save should error when the parent dir cannot be created")
+	}
+}
+
+// TestSaveWriteTmpError verifies Save surfaces an error when the temp file
+// cannot be written (the directory is read-only).
+func TestSaveWriteTmpError(t *testing.T) {
+	roDir := filepath.Join(t.TempDir(), "ro")
+	if err := os.Mkdir(roDir, 0o500); err != nil {
+		t.Fatalf("mkdir ro: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(roDir, 0o700) })
+	if err := Save(filepath.Join(roDir, "state.json"), &State{Agents: []Agent{{ID: "a", InboxChannel: "i"}}}); err == nil {
+		t.Fatal("Save should error when the .tmp file cannot be written")
+	}
+}
+
+// TestSaveBackupRotateError verifies Save surfaces an error when an existing
+// backup cannot be rotated (the directory becomes read-only between writes).
+func TestSaveBackupRotateError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	if err := Save(path, &State{Agents: []Agent{{ID: "a", InboxChannel: "i"}}}); err != nil {
+		t.Fatalf("save v1: %v", err)
+	}
+	if err := Save(path, &State{Agents: []Agent{{ID: "a", InboxChannel: "i"}, {ID: "b", InboxChannel: "j"}}}); err != nil {
+		t.Fatalf("save v2: %v", err) // creates the first .bak
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if err := Save(path, &State{Agents: []Agent{{ID: "c", InboxChannel: "k"}}}); err == nil {
+		t.Fatal("Save should error when an existing backup cannot be rotated")
+	}
+}
+
+// TestSaveRefusesEmptyOverNonEmpty verifies the guard: a downgraded/buggy
+// binary that tries to write zero agents over a populated file is refused, and
+// the live file is left untouched (no backup rotated either, since the guard
+// fires first).
+func TestSaveRefusesEmptyOverNonEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	seed := &State{Agents: []Agent{{ID: "a", Key: "k1", InboxChannel: "i"}}}
+	if err := Save(path, seed); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := Save(path, &State{}); err == nil {
+		t.Fatal("Save of empty agents over a populated file must be refused")
+	}
+	cur, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cur.Agents) != 1 || cur.Agents[0].ID != "a" {
+		t.Fatalf("refused save must leave the file intact, got %+v", cur.Agents)
+	}
+	if _, err := os.Stat(path + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("refused save must not rotate backups; .bak stat err = %v", err)
+	}
+}
+
+// TestSaveAllowEmptyClobbersAndBacksUp verifies that the legitimate "removed
+// the last agent" case is honored when AllowEmpty is passed, and that the
+// cleared agents remain recoverable from the backup.
+func TestSaveAllowEmptyClobbersAndBacksUp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	seed := &State{Agents: []Agent{{ID: "a", Key: "k1", InboxChannel: "i"}}}
+	if err := Save(path, seed); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := Save(path, &State{}, AllowEmpty()); err != nil {
+		t.Fatalf("AllowEmpty save should succeed: %v", err)
+	}
+	if cur, _ := Load(path); len(cur.Agents) != 0 {
+		t.Fatalf("live file should be empty after an intentional clear, got %+v", cur.Agents)
+	}
+	bak, err := Load(path + ".bak")
+	if err != nil {
+		t.Fatalf("load backup: %v", err)
+	}
+	if len(bak.Agents) != 1 || bak.Agents[0].Key != "k1" {
+		t.Fatalf("backup should hold the cleared agents, got %+v", bak.Agents)
+	}
+}
+
+// TestSaveEmptyOnFreshPathAllowed verifies the guard only blocks emptying a
+// populated file — writing an empty state where none existed is fine.
+func TestSaveEmptyOnFreshPathAllowed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := Save(path, &State{}); err != nil {
+		t.Fatalf("empty save to a fresh path should succeed: %v", err)
+	}
+	if cur, _ := Load(path); len(cur.Agents) != 0 {
+		t.Fatalf("expected empty state, got %+v", cur.Agents)
+	}
+}
+
+// TestSaveOverUnparseableExistingAllowed verifies the guard does not block when
+// the prior agent count is unknowable (corrupt file), and that the corrupt
+// bytes are still preserved as a backup.
+func TestSaveOverUnparseableExistingAllowed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte("{ this is not json"), 0o600); err != nil {
+		t.Fatalf("seed garbage: %v", err)
+	}
+	if err := Save(path, &State{}); err != nil {
+		t.Fatalf("save over unparseable existing should not be blocked: %v", err)
+	}
+	raw, err := os.ReadFile(path + ".bak")
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if string(raw) != "{ this is not json" {
+		t.Fatalf("backup should preserve the prior bytes verbatim, got %q", raw)
 	}
 }

@@ -162,7 +162,9 @@ func Remove(statePath, id string) error {
 	if !s.Remove(id) {
 		return fmt.Errorf("agent %q not found locally", id)
 	}
-	if err := agentstate.Save(statePath, s); err != nil {
+	// Removing the last managed agent legitimately leaves an empty list, so
+	// opt past Save's empty-clobber guard.
+	if err := agentstate.Save(statePath, s, agentstate.AllowEmpty()); err != nil {
 		return fmt.Errorf("save state: %w", err)
 	}
 	return nil
