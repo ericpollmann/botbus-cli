@@ -149,6 +149,37 @@ func TestRosterControlError(t *testing.T) {
 	}
 }
 
+func TestEnsureRootCreatesThenReuses(t *testing.T) {
+	dir := t.TempDir()
+	statePath := dir + "/state.json"
+	srv := stubAcceptAll(t) // mint + register always 200
+	defer srv.Close()
+	d := NewRuntime(Config{
+		State: &agentstate.State{}, StatePath: statePath,
+		Hub: hubclient.NewFake(), Control: control.NewClient(srv.URL),
+		MintKey: func() string { return "rootkey" }, Domain: "botbus.ai",
+	})
+	a1, err := d.EnsureRoot(context.Background())
+	if err != nil || a1.Name != "root" {
+		t.Fatalf("EnsureRoot #1: %v %+v", err, a1)
+	}
+	a2, err := d.EnsureRoot(context.Background())
+	if err != nil || a2.ID != a1.ID {
+		t.Fatalf("EnsureRoot #2 should reuse: %v %+v", err, a2)
+	}
+}
+
+func stubAcceptAll(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/mint" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"id": "minted-id"})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+}
+
 // stubRoster serves GET /v1/agents, returning one "root" node only when the
 // request carries the expected X-Agent-Id + Bearer key.
 func stubRoster(t *testing.T, wantID, wantKey string) *httptest.Server {

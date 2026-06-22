@@ -35,6 +35,18 @@ func (d *Daemon) root() (agentstate.Agent, error) {
 	return a, nil
 }
 
+// hostDeps builds the hostagent collaborators from the runtime's own fields.
+func (d *Daemon) hostDeps() hostagent.Deps {
+	return hostagent.Deps{
+		Hub: d.hub, Control: d.control, StatePath: d.statePath, MintKey: d.mintKey,
+	}
+}
+
+// EnsureRoot creates the workspace root on first run, else reuses + re-registers it.
+func (d *Daemon) EnsureRoot(ctx context.Context) (agentstate.Agent, error) {
+	return hostagent.EnsureRoot(ctx, d.hostDeps())
+}
+
 // Roster returns the agent tree (parent links + liveness) as the root.
 func (d *Daemon) Roster(ctx context.Context) ([]wire.AgentNode, error) {
 	r, err := d.root()
