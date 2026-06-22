@@ -31,7 +31,14 @@ func TestInboxDeliversToNextTool(t *testing.T) {
 		envelope.Envelope{ID: "m1", From: "eric", Body: "build please"},
 	))
 
-	ag := &agentMCP{rt: rt, hub: fake, outbound: "out", from: "myth-compiler"}
+	// Build a minimal Daemon with the runtime pre-wired so ReadInbox resolves.
+	st := &agentstate.State{
+		Daemon: agentstate.Daemon{OutboundChannel: "out"},
+		Agents: []agentstate.Agent{{ID: "myth-compiler", Key: "key-xyz", Name: "myth-compiler", InboxChannel: "inbox-c"}},
+	}
+	d := &Daemon{state: st, hub: fake, runtimes: map[string]*AgentRuntime{"myth-compiler": rt}}
+	ag := &agentMCP{ops: d, agentID: "myth-compiler", from: "myth-compiler"}
+
 	deadline := time.After(2 * time.Second)
 	for {
 		res, err := ag.toolNext(ctx, mcp.CallToolRequest{

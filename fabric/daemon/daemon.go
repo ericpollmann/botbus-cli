@@ -8,7 +8,6 @@ import (
 	"github.com/ericpollmann/botbus-cli/fabric/control"
 	"github.com/ericpollmann/botbus-cli/fabric/profile"
 	"github.com/ericpollmann/botbus-proto/hubclient"
-	"github.com/mark3labs/mcp-go/server"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -64,9 +63,8 @@ func (d *Daemon) mux() *http.ServeMux {
 	m := http.NewServeMux()
 	for _, a := range d.state.Agents {
 		path := "/a/" + a.Key
-		ag := &agentMCP{rt: d.runtimes[a.ID], hub: d.hub, outbound: d.state.Daemon.OutboundChannel, from: a.Name}
-		s := buildMCPServer(ag)
-		m.Handle(path, server.NewStreamableHTTPServer(s, server.WithEndpointPath(path)))
+		ag := &agentMCP{ops: d, agentID: a.ID, from: a.Name}
+		m.Handle(path, newAgentHandler(ag, path))
 	}
 	return m
 }

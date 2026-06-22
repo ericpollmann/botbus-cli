@@ -5,17 +5,15 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/ericpollmann/botbus-proto/hubclient"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// agentMCP binds one agent's runtime + outbound path for its MCP tools.
+// agentMCP binds one agent's Ops surface for its MCP tools.
 type agentMCP struct {
-	rt       *AgentRuntime
-	hub      hubclient.HubClient
-	outbound string
-	from     string
+	ops     Ops
+	agentID string
+	from    string
 }
 
 // buildMCPServer registers the next/send tools for one agent and returns the
@@ -37,30 +35,24 @@ func buildMCPServer(ag *agentMCP) *server.MCPServer {
 	return s
 }
 
-// buildAgentHandler returns a streamable-HTTP MCP handler exposing next/send
-// for one agent (default endpoint path).
-func buildAgentHandler(ag *agentMCP) http.Handler {
-	return server.NewStreamableHTTPServer(buildMCPServer(ag))
-}
-
 func (ag *agentMCP) toolNext(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	timeout := req.GetInt("timeout_seconds", 30)
 	if timeout > 300 {
 		timeout = 300
 	}
-	return mcp.NewToolResultText(Next(ctx, ag.rt, timeout)), nil
+	out, err := ag.ops.ReadInbox(ctx, ag.agentID, timeout)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(out), nil
 }
 
 func (ag *agentMCP) toolSend(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	args := SendArgs{
-		Body:    req.GetString("body", ""),
-		Kind:    req.GetString("kind", ""),
-		Subject: req.GetString("subject", ""),
+	var to []string
+	if s := req.GetString("to", ""); s != "" {
+		to = splitComma(s)
 	}
-	if to := req.GetString("to", ""); to != "" {
-		args.To = splitComma(to)
-	}
-	if err := Send(ctx, ag.hub, ag.outbound, ag.from, args); err != nil {
+	if err := ag.ops.Send(ctx, ag.from, req.GetString("body", ""), to, req.GetString("kind", "")); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	return mcp.NewToolResultText("sent"), nil
@@ -75,4 +67,10 @@ func splitComma(s string) []string {
 		}
 	}
 	return out
+}
+
+// newAgentHandler returns a streamable-HTTP MCP handler exposing next/send for
+// one agent at the given endpoint path.
+func newAgentHandler(ag *agentMCP, path string) http.Handler {
+	return server.NewStreamableHTTPServer(buildMCPServer(ag), server.WithEndpointPath(path))
 }

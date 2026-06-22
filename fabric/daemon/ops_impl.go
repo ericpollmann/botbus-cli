@@ -10,6 +10,9 @@ import (
 	"github.com/ericpollmann/botbus-proto/wire"
 )
 
+// Compile-time assertion: *Daemon satisfies the Ops interface.
+var _ Ops = (*Daemon)(nil)
+
 // root returns the operator's root agent (id + capability key). Resolution
 // order: (1) loaded profile, (2) in-memory state, (3) local state file.
 func (d *Daemon) root() (agentstate.Agent, error) {
