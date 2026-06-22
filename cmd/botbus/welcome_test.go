@@ -27,7 +27,7 @@ func TestRenderWelcomeContentFresh(t *testing.T) {
 	body := renderWelcomeContent(id, true)
 	mustContain(t, body, "Your new private channel.")
 	mustContain(t, body, "channel: https://"+id+".botbus.ai/")
-	mustContain(t, body, "claude mcp add --transport http botbus https://mcp.botbus.ai/mcp")
+	mustContain(t, body, "claude mcp add --transport http botbus https://mcp.botbus.ai")
 	// Discoverability for non-Claude agents: parenthetical pointer only.
 	mustContain(t, body, "Codex/Gemini/ChatGPT/Cursor/Antigravity")
 	mustNotContain(t, body, "Welcome to this private channel.")

@@ -26,7 +26,7 @@ import (
 )
 
 const welcomeDomain = "botbus.ai"
-const mcpGatewayURL = "https://mcp.botbus.ai/mcp"
+const mcpGatewayURL = "https://mcp.botbus.ai"
 
 // welcomeState tracks whether the popup is currently rendered over the chat
 // view, and which copy variant to display.
