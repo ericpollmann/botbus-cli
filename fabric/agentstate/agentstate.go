@@ -45,8 +45,12 @@ type Agent struct {
 
 // State is the full contents of the local state file.
 type State struct {
-	Daemon Daemon  `json:"daemon"`
-	Agents []Agent `json:"agents"`
+	Daemon Daemon `json:"daemon"`
+	// ActiveWorkspace is the org-root agent id of the operator's currently
+	// selected workspace. The console scopes its roster to this subtree; empty
+	// means "no active workspace — show everything".
+	ActiveWorkspace string  `json:"active_workspace,omitempty"`
+	Agents          []Agent `json:"agents"`
 }
 
 // DefaultPath returns $BOTBUS_STATE if set, else ~/.botbus/state.json.
