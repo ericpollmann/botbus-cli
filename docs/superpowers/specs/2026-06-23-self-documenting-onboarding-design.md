@@ -33,9 +33,11 @@ finishes onboarded *and* knowing how the system works.
 
 ## 3. The flow
 
-One cohesive bubbletea model — a step state machine. Each step is a screen that runs
-the real action and shows its real output before advancing. `esc` aborts a step back
-a level; `ctrl+c` quits. The steps:
+Steps 1–5 are imperative guided prompts (matching the existing `firstRunOps`
+readLine style — and required because the runtime is rebuilt after the root is
+created in step 1); **step 6, the live board, is bubbletea** (where model-update→
+auto-refresh matters). Each step runs the real action and shows its real output
+before advancing. `esc`/empty skips an optional step; `ctrl+c` quits. The steps:
 
 1. **Name your workspace** → `workspaceCreate(name)` mints the org-root anchor and
    sets it active (`setActiveWorkspace`). Shows the workspace channel URL.
