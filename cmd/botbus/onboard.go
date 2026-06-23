@@ -11,6 +11,10 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
+	"github.com/ericpollmann/botbus-cli/fabric/hostagent"
+	"github.com/ericpollmann/botbus-cli/fabric/profile"
 )
 
 // seedSampleTask posts one task.started event frame to channelURL so the live
@@ -44,4 +48,40 @@ func seedSampleTask(ctx context.Context, channelURL, byName string) error {
 		return fmt.Errorf("seed: HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func ensureWorkspaceRoot(ctx context.Context, d hostagent.Deps, profilePath, wsName, user string) (agentstate.Agent, error) {
+	root, ok, err := hostagent.GetByName(d.StatePath, wsName)
+	if err != nil {
+		return agentstate.Agent{}, err
+	}
+	if ok {
+		// Reuse: re-register (no field changes) so a prior run that minted locally
+		// but failed to reach the router self-heals (mirrors hostagent.EnsureRoot).
+		root, err = hostagent.Update(ctx, d, wsName, hostagent.UpdateFields{})
+		if err != nil {
+			return agentstate.Agent{}, err
+		}
+	} else {
+		root, err = hostagent.Create(ctx, d, hostagent.CreateOpts{Name: wsName}) // Parent="" => org-root
+		if err != nil {
+			return agentstate.Agent{}, err
+		}
+	}
+
+	// Persist the org-root as the operator's profile root, preserving any existing
+	// Framing (profile.Load returns a zero profile on first run).
+	p, err := profile.Load(profilePath)
+	if err != nil || p == nil {
+		p = &profile.Profile{}
+	}
+	p.User = user
+	p.Root = profile.Root{ID: root.ID, InboxChannel: root.InboxChannel, Key: root.Key}
+	if err := profile.Save(profilePath, p); err != nil {
+		return agentstate.Agent{}, err
+	}
+	if err := setActiveWorkspace(d.StatePath, root.ID); err != nil {
+		return agentstate.Agent{}, err
+	}
+	return root, nil
 }
