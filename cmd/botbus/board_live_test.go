@@ -4,7 +4,10 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestFetchBoardDecodesColumns(t *testing.T) {
@@ -36,5 +39,45 @@ func TestFetchBoardErrorsOnNon200(t *testing.T) {
 	defer srv.Close()
 	if _, err := fetchBoard(context.Background(), srv.URL); err == nil {
 		t.Fatal("expected error on HTTP 500")
+	}
+}
+
+func TestLiveBoardUpdateAppliesBoardAndErr(t *testing.T) {
+	m := newLiveBoardModel(context.Background(), "https://x.botbus.ai/", "mythwork")
+
+	// A board message populates the model and clears any prior error.
+	got, _ := m.Update(boardMsg(boardView{InProgress: []boardCard{{Title: "Onboarding"}}}))
+	m = got.(liveBoardModel)
+	if !m.loaded || len(m.board.InProgress) != 1 {
+		t.Fatalf("boardMsg should load the board, got loaded=%v board=%+v", m.loaded, m.board)
+	}
+	if v := m.View(); !strings.Contains(v, "Onboarding") {
+		t.Fatalf("View should render the card title, got:\n%s", v)
+	}
+
+	// An error message sets err (and View shows a reconnect line, not a crash).
+	got, _ = m.Update(boardErrMsg{err: context.DeadlineExceeded})
+	m = got.(liveBoardModel)
+	if m.err == nil {
+		t.Fatal("boardErrMsg should set err")
+	}
+	if !strings.Contains(m.View(), "reconnect") {
+		t.Fatalf("View should show a reconnect hint on error, got:\n%s", m.View())
+	}
+}
+
+func TestLiveBoardTickReschedulesFetch(t *testing.T) {
+	m := newLiveBoardModel(context.Background(), "https://x.botbus.ai/", "mythwork")
+	_, cmd := m.Update(boardTickMsg{})
+	if cmd == nil {
+		t.Fatal("a tick should schedule the next fetch+tick (non-nil cmd)")
+	}
+}
+
+func TestLiveBoardQuitKeys(t *testing.T) {
+	m := newLiveBoardModel(context.Background(), "https://x.botbus.ai/", "mythwork")
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd == nil {
+		t.Fatal("esc should return a quit command")
 	}
 }
