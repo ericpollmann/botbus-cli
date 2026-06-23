@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
@@ -158,7 +159,9 @@ func onboardSteps(in io.Reader, out io.Writer, d hostagent.Deps, profilePath str
 			fmt.Fprintln(out, "  (couldn't set directive:", uerr, ")")
 		} else {
 			if p2, lerr := profile.Load(profilePath); lerr == nil && p2 != nil {
-				p2.Framing = directive // injected into child welcomes
+				// Intentionally mirrored: Focus drives the root-agent briefing/roster;
+				// Framing is injected into child-agent welcome messages. Both must stay in sync.
+				p2.Framing = directive
 				_ = profile.Save(profilePath, p2)
 			}
 			fmt.Fprintln(out, "✓ directive set")
@@ -210,11 +213,18 @@ func runOnboard() {
 		os.Exit(1)
 	}
 
-	// Seed one card so the board isn't empty on first paint (best-effort).
+	// Seed one card so the board isn't empty on first paint (best-effort, time-boxed
+	// so a slow/hung hub can't stall the hand-off into the live board).
 	if p, lerr := profile.Load(profilePath); lerr == nil && p != nil {
-		if serr := seedSampleTask(ctx, channelURL, "you"); serr != nil {
+		by := p.User
+		if by == "" {
+			by = "you"
+		}
+		sctx, scancel := context.WithTimeout(ctx, 5*time.Second)
+		if serr := seedSampleTask(sctx, channelURL, by); serr != nil {
 			fmt.Fprintln(os.Stderr, "(seed skipped:", serr, ")")
 		}
+		scancel()
 	}
 
 	fmt.Fprintln(os.Stdout, "\nOpening your live board — watch tasks appear. (q to quit)")
