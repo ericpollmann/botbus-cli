@@ -72,7 +72,10 @@ func ensureWorkspaceRoot(ctx context.Context, d hostagent.Deps, profilePath, wsN
 	// Persist the org-root as the operator's profile root, preserving any existing
 	// Framing (profile.Load returns a zero profile on first run).
 	p, err := profile.Load(profilePath)
-	if err != nil || p == nil {
+	if err != nil {
+		return agentstate.Agent{}, err
+	}
+	if p == nil {
 		p = &profile.Profile{}
 	}
 	p.User = user

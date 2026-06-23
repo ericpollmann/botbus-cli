@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -54,7 +55,7 @@ func TestEnsureWorkspaceRootCreatesAndPersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("profile.Load: %v", err)
 	}
-	if p.User != "eric" || p.Root.ID != root.ID || p.Root.InboxChannel != root.InboxChannel {
+	if p.User != "eric" || p.Root.ID != root.ID || p.Root.InboxChannel != root.InboxChannel || p.Root.Key != root.Key {
 		t.Fatalf("profile not persisted to the org-root: %+v", p)
 	}
 }
@@ -90,8 +91,26 @@ func TestEnsureWorkspaceRootPreservesFraming(t *testing.T) {
 	if _, err := ensureWorkspaceRoot(context.Background(), d, profilePath, "mythwork", "eric"); err != nil {
 		t.Fatalf("ensureWorkspaceRoot: %v", err)
 	}
-	p, _ := profile.Load(profilePath)
+	p, err := profile.Load(profilePath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
 	if p.Framing != "ship fast" {
 		t.Fatalf("existing Framing should be preserved, got %q", p.Framing)
+	}
+}
+
+func TestEnsureWorkspaceRootSurfacesCorruptProfile(t *testing.T) {
+	d := fakeDeps(t)
+	profilePath := filepath.Join(t.TempDir(), "profile.json")
+	if err := os.WriteFile(profilePath, []byte("{not valid json"), 0o600); err != nil {
+		t.Fatalf("seed corrupt profile: %v", err)
+	}
+	if _, err := ensureWorkspaceRoot(context.Background(), d, profilePath, "mythwork", "eric"); err == nil {
+		t.Fatal("a corrupt profile should surface an error, not be overwritten")
+	}
+	got, _ := os.ReadFile(profilePath)
+	if string(got) != "{not valid json" {
+		t.Fatalf("corrupt profile must not be overwritten, got %q", got)
 	}
 }
