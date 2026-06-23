@@ -1,7 +1,8 @@
 # Self-documenting onboarding wizard — design
 
 - **Date:** 2026-06-23
-- **Status:** Approved in brainstorm ("go for it"). One open decision flagged for spec review: the **operator-identity model** (§4).
+- **Status:** Approved. Operator-identity decision resolved → **Model A** (operator's
+  root *is* the workspace org-root); revisit symmetric Model B only if issues arise.
 - **Repo:** `botbus-cli` (the wizard is entirely client-side; the hub needs no new endpoints).
 - **Parent designs:** `botbus/docs/superpowers/specs/2026-06-23-fleet-platform-design.md`, `…/2026-06-23-hierarchical-aggregation.md`.
 
