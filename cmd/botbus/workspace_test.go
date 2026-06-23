@@ -176,3 +176,35 @@ func TestWorkspaceListReturnsRootAndMembers(t *testing.T) {
 		t.Fatalf("alice should be parented to acme: %+v", byName["alice"])
 	}
 }
+
+// parseInviteArgs must accept the --workspace flag in ANY position relative to
+// the positional user. The bug this guards: `invite ethan --workspace x` left
+// --workspace unparsed (flag.Parse stops at the first positional), so the
+// documented form fell through to usage.
+func TestParseInviteArgs(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     []string
+		user, ws string
+		ok       bool
+	}{
+		{"positional then flag (the bug)", []string{"ethan", "--workspace", "mythwork"}, "ethan", "mythwork", true},
+		{"flag then positional", []string{"--workspace", "mythwork", "ethan"}, "ethan", "mythwork", true},
+		{"flag=value then positional", []string{"--workspace=mythwork", "ethan"}, "ethan", "mythwork", true},
+		{"positional then flag=value", []string{"ethan", "--workspace=mythwork"}, "ethan", "mythwork", true},
+		{"missing workspace", []string{"ethan"}, "", "", false},
+		{"missing user", []string{"--workspace", "mythwork"}, "", "", false},
+		{"empty", nil, "", "", false},
+		{"extra positional rejected", []string{"ethan", "bob", "--workspace", "x"}, "", "", false},
+		{"unknown flag rejected", []string{"ethan", "--bogus"}, "", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			user, ws, ok := parseInviteArgs(c.args)
+			if ok != c.ok || user != c.user || ws != c.ws {
+				t.Fatalf("parseInviteArgs(%q) = (%q,%q,%v), want (%q,%q,%v)",
+					c.args, user, ws, ok, c.user, c.ws, c.ok)
+			}
+		})
+	}
+}
