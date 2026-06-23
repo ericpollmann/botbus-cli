@@ -201,55 +201,6 @@ func (m rosterModel) View() string {
 	return b.String()
 }
 
-// firstRunOps is the one-time operator setup: prompt for the operator's name
-// and the standing framing (read from in, prompts written to out), mint the
-// root agent via ops.EnsureRoot, persist the profile, and return it. Factored
-// pure (io.Reader/io.Writer + injected daemon.Ops + an explicit profile path)
-// so it's unit-testable.
-func firstRunOps(in io.Reader, out io.Writer, ops daemon.Ops, profilePath string) (*profile.Profile, error) {
-	r := bufio.NewReader(in)
-	fmt.Fprintln(out, "Welcome to the botbus console — one-time setup.")
-	fmt.Fprint(out, "Your name: ")
-	user, err := readLine(r)
-	if err != nil {
-		return nil, fmt.Errorf("read name: %w", err)
-	}
-	user = strings.TrimSpace(user)
-	if user == "" {
-		return nil, fmt.Errorf("name is required")
-	}
-	fmt.Fprint(out, "Standing framing (how you work, injected into every agent's welcome): ")
-	framing, err := readLine(r)
-	if err != nil {
-		return nil, fmt.Errorf("read framing: %w", err)
-	}
-	framing = strings.TrimSpace(framing)
-
-	// EnsureRoot (not CreateRoot) so a first-run that minted a local root but
-	// then failed to Register (flaky router) is idempotent: the next run reuses
-	// the existing local root and re-registers it instead of dying with "already
-	// exists".
-	root, err := ops.EnsureRoot(context.Background())
-	if err != nil {
-		return nil, fmt.Errorf("create root agent: %w", err)
-	}
-
-	p := &profile.Profile{
-		User:    user,
-		Framing: framing,
-		Root: profile.Root{
-			ID:           root.ID,
-			InboxChannel: root.InboxChannel,
-			Key:          root.Key,
-		},
-	}
-	if err := profile.Save(profilePath, p); err != nil {
-		return nil, fmt.Errorf("save profile: %w", err)
-	}
-	fmt.Fprintf(out, "Root channel ready: https://%s.%s\n", root.InboxChannel, domain)
-	return p, nil
-}
-
 // readLine reads a single line (without the trailing newline) from r. io.EOF
 // with content already read is treated as a complete final line.
 func readLine(r *bufio.Reader) (string, error) {
@@ -288,17 +239,14 @@ func runConsole() {
 		os.Exit(1)
 	}
 
-	// Build the one runtime (Ops + faces share it). buildRuntime is defined in
-	// cmd/botbus/runtime.go (Task 9 adds the single-runtime guard).
-	rt := buildRuntime(p)
 	if !p.Configured() {
-		p, err = firstRunOps(os.Stdin, os.Stdout, rt, profilePath)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "setup:", err)
-			os.Exit(1)
-		}
-		rt = buildRuntime(p) // rebuild with the now-populated profile
+		// First run: hand off to the guided wizard (it sets up the profile +
+		// workspace and ends in the live board). The operator re-runs `botbus`
+		// afterward to open the console.
+		runOnboard()
+		return
 	}
+	rt := buildRuntime(p)
 
 	nodes, err := rt.Roster(ctx)
 	if err != nil {

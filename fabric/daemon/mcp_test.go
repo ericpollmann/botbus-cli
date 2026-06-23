@@ -46,6 +46,7 @@ func (f *fakeOps) ReadInbox(_ context.Context, id string, _ int) (string, error)
 func (f *fakeOps) EnsureRoot(_ context.Context) (agentstate.Agent, error) {
 	return agentstate.Agent{}, nil
 }
+func (f *fakeOps) Addr() string { return "127.0.0.1:8765" }
 
 func TestToolSendRoutesThroughOps(t *testing.T) {
 	f := &fakeOps{}

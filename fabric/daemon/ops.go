@@ -25,4 +25,7 @@ type Ops interface {
 	Send(ctx context.Context, fromAgent string, args SendArgs) error
 	ReadInbox(ctx context.Context, agentID string, timeoutSec int) (string, error)
 	EnsureRoot(ctx context.Context) (agentstate.Agent, error)
+	// Addr is the local MCP listen address (host:port) used to build connect
+	// instructions. *Daemon already implements it.
+	Addr() string
 }
