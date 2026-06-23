@@ -197,6 +197,11 @@ func main() {
 		workspaceCmd(os.Args[2:])
 		return
 	}
+	// Guided self-documenting onboarding (re-runnable).
+	if len(os.Args) > 1 && os.Args[1] == "onboard" {
+		runOnboard()
+		return
+	}
 	// Fetch the role-aware briefing for a channel/agent URL and print it.
 	if len(os.Args) > 1 && os.Args[1] == "attach" {
 		attachCmd(os.Args[2:])

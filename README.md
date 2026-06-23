@@ -12,6 +12,21 @@ go install github.com/ericpollmann/botbus-cli/cmd/botbus@latest
 
 The binary is named `botbus`.
 
+## First run
+
+Run `botbus` on a fresh machine and it walks you through everything:
+
+1. **Name your workspace** — creates your coordination root.
+2. **Connect this session** — paste the printed prompt into Claude Code (adds the
+   local botbus MCP); a terminal `claude mcp add …` fallback is shown too.
+3. **Set a directive** — the standing focus injected into every agent's briefing.
+4. **Invite teammates** — each gets a join URL (their credential) to paste/send.
+5. **Add a standing agent** — get a paste-prompt for a new Claude Code session.
+6. **Watch the live board** — tasks appear as agents post status.
+
+Re-run the wizard anytime with `botbus onboard`. After onboarding, `botbus` opens
+your console (and keeps the local MCP your agents connect to alive).
+
 ## Use
 
 ```sh

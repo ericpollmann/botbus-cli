@@ -12,8 +12,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
 	"github.com/ericpollmann/botbus-cli/fabric/daemon"
 	"github.com/ericpollmann/botbus-cli/fabric/hostagent"
@@ -188,4 +192,35 @@ func onboardSteps(in io.Reader, out io.Writer, d hostagent.Deps, profilePath str
 	}
 
 	return channelURL, nil
+}
+
+// runOnboard is the no-args wizard entrypoint: guided setup (steps 1-5) then the
+// live board (step 6). Used for bare-botbus first-run and `botbus onboard`.
+func runOnboard() {
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	profilePath := profile.DefaultPath()
+	deps := realDeps()
+	rebuild := func(p *profile.Profile) daemon.Ops { return buildRuntime(p) }
+
+	channelURL, err := onboardSteps(os.Stdin, os.Stdout, deps, profilePath, rebuild)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "onboard:", err)
+		os.Exit(1)
+	}
+
+	// Seed one card so the board isn't empty on first paint (best-effort).
+	if p, lerr := profile.Load(profilePath); lerr == nil && p != nil {
+		if serr := seedSampleTask(ctx, channelURL, "you"); serr != nil {
+			fmt.Fprintln(os.Stderr, "(seed skipped:", serr, ")")
+		}
+	}
+
+	fmt.Fprintln(os.Stdout, "\nOpening your live board — watch tasks appear. (q to quit)")
+	m := newLiveBoardModel(ctx, channelURL, "your workspace")
+	if _, rerr := tea.NewProgram(m, tea.WithAltScreen()).Run(); rerr != nil {
+		fmt.Fprintln(os.Stderr, rerr)
+	}
+	fmt.Fprintln(os.Stdout, "Done. Run `botbus` anytime to open your console (it serves the local MCP your agents use).")
 }

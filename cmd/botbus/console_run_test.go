@@ -44,7 +44,7 @@ func stubControl(t *testing.T) *control.Client {
 }
 
 // fakeOps builds a *daemon.Daemon wired to a fake hub + stub control for
-// integration-level firstRunOps / onboardChildOps tests.
+// integration-level onboardChildOps tests.
 func fakeOps(t *testing.T, hub *hubclient.Fake, statePath string) *daemon.Daemon {
 	t.Helper()
 	st, _ := agentstate.Load(statePath)
@@ -56,148 +56,6 @@ func fakeOps(t *testing.T, hub *hubclient.Fake, statePath string) *daemon.Daemon
 		MintKey:   func() string { return "key-fixed" },
 		Domain:    domain,
 	})
-}
-
-func TestFirstRunCreatesRootAndSavesProfile(t *testing.T) {
-	hub := hubclient.NewFake()
-	statePath := filepath.Join(t.TempDir(), "state.json")
-	ops := fakeOps(t, hub, statePath)
-	profilePath := filepath.Join(t.TempDir(), "profile.json")
-
-	in := strings.NewReader("eric\nprefers short debounced updates\n")
-	var out strings.Builder
-	p, err := firstRunOps(in, &out, ops, profilePath)
-	if err != nil {
-		t.Fatalf("firstRunOps: %v", err)
-	}
-	if p.User != "eric" {
-		t.Fatalf("user = %q, want eric", p.User)
-	}
-	if p.Framing != "prefers short debounced updates" {
-		t.Fatalf("framing = %q", p.Framing)
-	}
-	if p.Root.ID == "" || p.Root.Key != "key-fixed" || p.Root.InboxChannel == "" {
-		t.Fatalf("root not populated: %+v", p.Root)
-	}
-	if !p.Configured() {
-		t.Fatal("profile should be Configured after first run")
-	}
-
-	// The saved profile on disk must round-trip identically.
-	saved, err := profile.Load(profilePath)
-	if err != nil {
-		t.Fatalf("load saved profile: %v", err)
-	}
-	if saved.User != "eric" || saved.Root.ID != p.Root.ID || saved.Root.InboxChannel != p.Root.InboxChannel {
-		t.Fatalf("saved profile mismatch: %+v", saved)
-	}
-}
-
-// flakyControl builds a control.Client that fails the FIRST register with 500
-// then succeeds on subsequent calls — mirroring a flaky router during first-run.
-// Returns the client and a rebuild func that constructs a fresh *daemon.Daemon
-// against the same stub server (so the shared regN counter increments across
-// both calls).
-func flakyControl(t *testing.T) (ctl *control.Client, rebuild func(*hubclient.Fake, string) *daemon.Daemon) {
-	t.Helper()
-	var n atomic.Int64
-	var regN atomic.Int64
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/mint", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{"id": fmt.Sprintf("minted-%d", n.Add(1))})
-	})
-	mux.HandleFunc("PUT /v1/agents/{id}", func(w http.ResponseWriter, _ *http.Request) {
-		if regN.Add(1) == 1 {
-			http.Error(w, "router down", http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	ctl = control.NewClient(srv.URL)
-	rebuild = func(hub *hubclient.Fake, statePath string) *daemon.Daemon {
-		st, _ := agentstate.Load(statePath)
-		return daemon.NewRuntime(daemon.Config{
-			State:     st,
-			StatePath: statePath,
-			Hub:       hub,
-			Control:   ctl,
-			MintKey:   func() string { return "key-fixed" },
-			Domain:    domain,
-		})
-	}
-	return
-}
-
-// firstRunOps is idempotent across a flaky-router first attempt: the first call
-// fails at Register (leaving a local root but no saved profile); the second
-// call must REUSE that local root (no "already exists") and end with a saved
-// profile.
-func TestFirstRunIdempotentAfterRegisterFailure(t *testing.T) {
-	hub := hubclient.NewFake()
-	statePath := filepath.Join(t.TempDir(), "state.json")
-	// flakyControl returns a shared control stub whose regN increments across
-	// both ops builds, so the first call fails (regN=1) and the second succeeds
-	// (regN=2) without needing two separate servers.
-	_, buildOps := flakyControl(t)
-	profilePath := filepath.Join(t.TempDir(), "profile.json")
-	input := "eric\nworks async\n"
-
-	// First run: register fails → error, no saved profile, but a local root.
-	ops := buildOps(hub, statePath)
-	if _, err := firstRunOps(strings.NewReader(input), &strings.Builder{}, ops, profilePath); err == nil {
-		t.Fatal("first firstRunOps should fail when Register is down")
-	}
-	if _, err := profile.Load(profilePath); err == nil {
-		// Load of a missing file yields a zero (unconfigured) profile, not an
-		// error — assert it's not configured rather than expecting a load error.
-		p, _ := profile.Load(profilePath)
-		if p.Configured() {
-			t.Fatal("profile must not be saved/configured after a failed first run")
-		}
-	}
-	agents, err := hostagent.List(statePath)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(agents) != 1 || agents[0].Name != "root" {
-		t.Fatalf("a local root should persist after the failed register: %+v", agents)
-	}
-	firstID := agents[0].ID
-
-	// Second run: must reuse the local root (no duplicate, no error) and save.
-	// Rebuild ops with the same statePath so it sees the persisted root.
-	ops2 := buildOps(hub, statePath)
-	p, err := firstRunOps(strings.NewReader(input), &strings.Builder{}, ops2, profilePath)
-	if err != nil {
-		t.Fatalf("second firstRunOps should reuse the local root and succeed: %v", err)
-	}
-	if p.Root.ID != firstID {
-		t.Fatalf("reused root id = %q, want persisted %q", p.Root.ID, firstID)
-	}
-	if !p.Configured() {
-		t.Fatal("profile should be Configured after the successful re-run")
-	}
-	agents, _ = hostagent.List(statePath)
-	if len(agents) != 1 {
-		t.Fatalf("firstRunOps must not create a second root: %+v", agents)
-	}
-	saved, err := profile.Load(profilePath)
-	if err != nil || !saved.Configured() {
-		t.Fatalf("profile should be saved on disk after the re-run: %v configured=%v", err, saved.Configured())
-	}
-}
-
-func TestFirstRunRequiresName(t *testing.T) {
-	hub := hubclient.NewFake()
-	statePath := filepath.Join(t.TempDir(), "state.json")
-	ops := fakeOps(t, hub, statePath)
-	in := strings.NewReader("\n\n") // empty name
-	var out strings.Builder
-	if _, err := firstRunOps(in, &out, ops, filepath.Join(t.TempDir(), "p.json")); err == nil {
-		t.Fatal("expected error for empty operator name")
-	}
 }
 
 func TestOnboardChildCreatesUnderRootAndSeedsWelcome(t *testing.T) {
@@ -366,16 +224,6 @@ func TestOnboardKeyInertWithoutHook(t *testing.T) {
 	m, _ = updConsole(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
 	if m.onboardState != onboardOff {
 		t.Fatal("o with no onboard hook should be inert")
-	}
-}
-
-// firstRunOps surfaces a read error when the input stream is empty (no name line).
-func TestFirstRunEmptyInputErrors(t *testing.T) {
-	hub := hubclient.NewFake()
-	statePath := filepath.Join(t.TempDir(), "state.json")
-	ops := fakeOps(t, hub, statePath)
-	if _, err := firstRunOps(strings.NewReader(""), &strings.Builder{}, ops, filepath.Join(t.TempDir(), "p.json")); err == nil {
-		t.Fatal("expected error on empty input")
 	}
 }
 
