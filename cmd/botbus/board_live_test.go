@@ -76,8 +76,13 @@ func TestLiveBoardTickReschedulesFetch(t *testing.T) {
 
 func TestLiveBoardQuitKeys(t *testing.T) {
 	m := newLiveBoardModel(context.Background(), "https://x.botbus.ai/", "mythwork")
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if cmd == nil {
-		t.Fatal("esc should return a quit command")
+	for _, k := range []tea.KeyMsg{
+		{Type: tea.KeyEsc},
+		{Type: tea.KeyCtrlC},
+		{Type: tea.KeyRunes, Runes: []rune("q")},
+	} {
+		if _, cmd := m.Update(k); cmd == nil {
+			t.Fatalf("key %v should return a quit command", k)
+		}
 	}
 }
