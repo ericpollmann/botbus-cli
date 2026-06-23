@@ -198,13 +198,16 @@ func TestScopeToWorkspaceCycleTerminates(t *testing.T) {
 // An unknown / unmatched orgRootID scopes to nothing (no node is the root and
 // no chain reaches it) — the console shows an empty workspace rather than the
 // whole router.
-func TestScopeToWorkspaceUnknownRoot(t *testing.T) {
+// An active workspace whose org-root isn't in the roster (stale/deregistered)
+// falls back to showing all nodes rather than stranding the operator with an
+// empty console.
+func TestScopeToWorkspaceUnknownRootShowsAll(t *testing.T) {
 	nodes := []wire.AgentNode{
 		{ID: "ID_a", Name: "a", Parent: ""},
 		{ID: "ID_b", Name: "b", Parent: "ID_a"},
 	}
-	if got := scopeToWorkspace(nodes, "ID_missing"); len(got) != 0 {
-		t.Fatalf("scopeToWorkspace(unknown) = %v, want empty", got)
+	if got := scopeToWorkspace(nodes, "ID_missing"); len(got) != len(nodes) {
+		t.Fatalf("scopeToWorkspace(unknown) = %v, want all %d nodes (fallback)", got, len(nodes))
 	}
 }
 

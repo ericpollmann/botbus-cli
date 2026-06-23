@@ -59,7 +59,10 @@ func newConsoleModel(nodes []wire.AgentNode) model {
 
 // scopeToWorkspace returns only the nodes in the subtree rooted at orgRootID
 // (that node + every descendant by Parent chain). orgRootID=="" returns nodes
-// unchanged (no active workspace → show everything, today's behavior).
+// unchanged (no active workspace → show everything, today's behavior). If
+// orgRootID is set but not present in the roster (a stale or deregistered
+// workspace), it also returns all nodes rather than stranding the operator with
+// an empty console.
 func scopeToWorkspace(nodes []wire.AgentNode, orgRootID string) []wire.AgentNode {
 	if orgRootID == "" {
 		return nodes
@@ -67,6 +70,9 @@ func scopeToWorkspace(nodes []wire.AgentNode, orgRootID string) []wire.AgentNode
 	byID := make(map[string]wire.AgentNode, len(nodes))
 	for _, n := range nodes {
 		byID[n.ID] = n
+	}
+	if _, ok := byID[orgRootID]; !ok {
+		return nodes // active workspace not in the roster → don't show an empty console
 	}
 	var out []wire.AgentNode
 	for _, n := range nodes {
