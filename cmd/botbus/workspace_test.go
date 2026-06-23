@@ -177,6 +177,82 @@ func TestWorkspaceListReturnsRootAndMembers(t *testing.T) {
 	}
 }
 
+// Creating a workspace makes it the active workspace: after workspaceCreate +
+// setActiveWorkspace, the persisted state's ActiveWorkspace is the new org-root
+// id.
+func TestWorkspaceCreateSetsActiveWorkspace(t *testing.T) {
+	deps := fakeDeps(t)
+	root, err := workspaceCreate(context.Background(), deps, "acme")
+	if err != nil {
+		t.Fatalf("workspaceCreate: %v", err)
+	}
+	if err := setActiveWorkspace(deps.StatePath, root.ID); err != nil {
+		t.Fatalf("setActiveWorkspace: %v", err)
+	}
+	s, err := agentstate.Load(deps.StatePath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if s.ActiveWorkspace != root.ID {
+		t.Fatalf("ActiveWorkspace = %q, want org-root id %q", s.ActiveWorkspace, root.ID)
+	}
+}
+
+// `workspace use <name>` switches the active workspace to the named workspace's
+// org-root id.
+func TestWorkspaceUseSwitchesActive(t *testing.T) {
+	deps := fakeDeps(t)
+	acme, err := workspaceCreate(context.Background(), deps, "acme")
+	if err != nil {
+		t.Fatalf("workspaceCreate acme: %v", err)
+	}
+	beta, err := workspaceCreate(context.Background(), deps, "beta")
+	if err != nil {
+		t.Fatalf("workspaceCreate beta: %v", err)
+	}
+	// Start with acme active, then `use beta`.
+	if err := setActiveWorkspace(deps.StatePath, acme.ID); err != nil {
+		t.Fatalf("setActiveWorkspace acme: %v", err)
+	}
+	if err := workspaceUse(deps.StatePath, "beta"); err != nil {
+		t.Fatalf("workspaceUse beta: %v", err)
+	}
+	s, err := agentstate.Load(deps.StatePath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if s.ActiveWorkspace != beta.ID {
+		t.Fatalf("ActiveWorkspace = %q, want beta id %q", s.ActiveWorkspace, beta.ID)
+	}
+}
+
+// `workspace use` of a non-existent workspace errors clearly (naming the missing
+// workspace) and does NOT change the active workspace.
+func TestWorkspaceUseMissingErrors(t *testing.T) {
+	deps := fakeDeps(t)
+	acme, err := workspaceCreate(context.Background(), deps, "acme")
+	if err != nil {
+		t.Fatalf("workspaceCreate: %v", err)
+	}
+	if err := setActiveWorkspace(deps.StatePath, acme.ID); err != nil {
+		t.Fatalf("setActiveWorkspace: %v", err)
+	}
+	err = workspaceUse(deps.StatePath, "ghost")
+	if err == nil {
+		t.Fatal("using a missing workspace should error")
+	}
+	if !strings.Contains(err.Error(), "ghost") {
+		t.Fatalf("error %q should name the missing workspace", err)
+	}
+	s, err := agentstate.Load(deps.StatePath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if s.ActiveWorkspace != acme.ID {
+		t.Fatalf("active workspace changed to %q on a failed use; want unchanged %q", s.ActiveWorkspace, acme.ID)
+	}
+}
+
 // parseInviteArgs must accept the --workspace flag in ANY position relative to
 // the positional user. The bug this guards: `invite ethan --workspace x` left
 // --workspace unparsed (flag.Parse stops at the first positional), so the

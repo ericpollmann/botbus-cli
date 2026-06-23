@@ -152,6 +152,65 @@ func TestRosterNavigationSelectsAgent(t *testing.T) {
 	}
 }
 
+// scopeToWorkspace returns only the org-root + its descendants (by Parent
+// chain); an empty orgRootID returns the roster unchanged.
+func TestScopeToWorkspace(t *testing.T) {
+	nodes := []wire.AgentNode{
+		{ID: "ID_acme", Name: "acme", Parent: ""},
+		{ID: "ID_eric", Name: "eric", Parent: "ID_acme"},
+		{ID: "ID_ericc", Name: "eric-compiler", Parent: "ID_eric"},
+		{ID: "ID_root", Name: "root", Parent: ""},
+		{ID: "ID_testboss", Name: "testboss", Parent: "ID_other"},
+		{ID: "ID_smoke", Name: "smoke-daemon", Parent: ""},
+	}
+
+	got := scopeToWorkspace(nodes, "ID_acme")
+	gotNames := map[string]bool{}
+	for _, n := range got {
+		gotNames[n.Name] = true
+	}
+	if len(got) != 3 || !gotNames["acme"] || !gotNames["eric"] || !gotNames["eric-compiler"] {
+		t.Fatalf("scopeToWorkspace(ID_acme) = %v, want {acme, eric, eric-compiler}", gotNames)
+	}
+
+	all := scopeToWorkspace(nodes, "")
+	if len(all) != len(nodes) {
+		t.Fatalf("scopeToWorkspace(\"\") returned %d nodes, want all %d", len(all), len(nodes))
+	}
+}
+
+// scopeToWorkspace must terminate even when the Parent chain forms a cycle
+// (defensive: a corrupt roster shouldn't hang the console).
+func TestScopeToWorkspaceCycleTerminates(t *testing.T) {
+	nodes := []wire.AgentNode{
+		{ID: "ID_acme", Name: "acme", Parent: "ID_loop"},
+		{ID: "ID_loop", Name: "loop", Parent: "ID_acme"},
+		{ID: "ID_solo", Name: "solo", Parent: ""},
+	}
+	// Scope to a real root that isn't part of the cycle: must return just it and
+	// not loop forever walking the cyclic parents of the others.
+	got := scopeToWorkspace(nodes, "ID_solo")
+	if len(got) != 1 || got[0].Name != "solo" {
+		t.Fatalf("scopeToWorkspace(ID_solo) = %v, want {solo}", got)
+	}
+}
+
+// An unknown / unmatched orgRootID scopes to nothing (no node is the root and
+// no chain reaches it) — the console shows an empty workspace rather than the
+// whole router.
+// An active workspace whose org-root isn't in the roster (stale/deregistered)
+// falls back to showing all nodes rather than stranding the operator with an
+// empty console.
+func TestScopeToWorkspaceUnknownRootShowsAll(t *testing.T) {
+	nodes := []wire.AgentNode{
+		{ID: "ID_a", Name: "a", Parent: ""},
+		{ID: "ID_b", Name: "b", Parent: "ID_a"},
+	}
+	if got := scopeToWorkspace(nodes, "ID_missing"); len(got) != len(nodes) {
+		t.Fatalf("scopeToWorkspace(unknown) = %v, want all %d nodes (fallback)", got, len(nodes))
+	}
+}
+
 // enter signals a dip-in request; cursor clamps at the ends.
 func TestRosterEnterSignalsDipAndClamps(t *testing.T) {
 	m := newRosterModel([]wire.AgentNode{{Name: "root", InboxChannel: "i"}})

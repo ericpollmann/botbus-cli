@@ -95,7 +95,8 @@ func TestLoadMissingReturnsEmpty(t *testing.T) {
 func TestSaveThenLoadRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	want := &State{
-		Daemon: Daemon{RouterURL: "http://127.0.0.1:8090", HubBase: "https://botbus.ai", HubDomain: "botbus.ai"},
+		Daemon:          Daemon{RouterURL: "http://127.0.0.1:8090", HubBase: "https://botbus.ai", HubDomain: "botbus.ai"},
+		ActiveWorkspace: "myth-compiler",
 		Agents: []Agent{{
 			ID: "myth-compiler", Key: "key-aaa", Name: "compiler",
 			InboxChannel: "inbox-1", Focus: "packages/compile", Mode: "session",
@@ -114,6 +115,9 @@ func TestSaveThenLoadRoundTrip(t *testing.T) {
 	}
 	if got.Daemon.RouterURL != want.Daemon.RouterURL {
 		t.Fatalf("daemon config lost: %+v", got.Daemon)
+	}
+	if got.ActiveWorkspace != want.ActiveWorkspace {
+		t.Fatalf("ActiveWorkspace lost: got %q want %q", got.ActiveWorkspace, want.ActiveWorkspace)
 	}
 }
 

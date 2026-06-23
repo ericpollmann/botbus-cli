@@ -19,6 +19,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
 	"github.com/ericpollmann/botbus-cli/fabric/daemon"
 	"github.com/ericpollmann/botbus-cli/fabric/profile"
 	"github.com/ericpollmann/botbus-proto/wire"
@@ -54,6 +55,43 @@ func newConsoleModel(nodes []wire.AgentNode) model {
 		input:      newChatInput(""),
 		seenColors: map[int]time.Time{},
 	}
+}
+
+// scopeToWorkspace returns only the nodes in the subtree rooted at orgRootID
+// (that node + every descendant by Parent chain). orgRootID=="" returns nodes
+// unchanged (no active workspace → show everything, today's behavior). If
+// orgRootID is set but not present in the roster (a stale or deregistered
+// workspace), it also returns all nodes rather than stranding the operator with
+// an empty console.
+func scopeToWorkspace(nodes []wire.AgentNode, orgRootID string) []wire.AgentNode {
+	if orgRootID == "" {
+		return nodes
+	}
+	byID := make(map[string]wire.AgentNode, len(nodes))
+	for _, n := range nodes {
+		byID[n.ID] = n
+	}
+	if _, ok := byID[orgRootID]; !ok {
+		return nodes // active workspace not in the roster → don't show an empty console
+	}
+	var out []wire.AgentNode
+	for _, n := range nodes {
+		// Walk the Parent chain up to len(nodes) hops (cycle cap) looking for the
+		// org-root. The node itself counts (cur == orgRootID on the first check).
+		cur := n.ID
+		for hops := 0; hops <= len(nodes); hops++ {
+			if cur == orgRootID {
+				out = append(out, n)
+				break
+			}
+			parent, ok := byID[cur]
+			if !ok || parent.Parent == "" {
+				break
+			}
+			cur = parent.Parent
+		}
+	}
+	return out
 }
 
 func (m rosterModel) selected() wire.AgentNode {
@@ -272,6 +310,13 @@ func runConsole() {
 			Name:         "root",
 			InboxChannel: p.Root.InboxChannel,
 		}}
+	}
+
+	// Scope the roster to the operator's active workspace (an org-root subtree).
+	// A missing/unreadable state file or an empty active workspace leaves the
+	// roster unchanged (show everything — today's behavior).
+	if st, serr := agentstate.Load(agentstate.DefaultPath()); serr == nil {
+		nodes = scopeToWorkspace(nodes, st.ActiveWorkspace)
 	}
 
 	// Bind the MCP port before launching the TUI — a conflict fails fast with a
