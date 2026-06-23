@@ -176,7 +176,9 @@ func Remove(ctx context.Context, d Deps, id string) (routerErr error, err error)
 		routerErr = d.Control.Deregister(ctx, a.ID, a.Key)
 	}
 	s.Remove(id) // ok == true, so this always removes
-	if err := agentstate.Save(d.StatePath, s); err != nil {
+	// Removing the last managed agent legitimately leaves an empty list, so opt
+	// past Save's empty-clobber guard.
+	if err := agentstate.Save(d.StatePath, s, agentstate.AllowEmpty()); err != nil {
 		return routerErr, fmt.Errorf("save state: %w", err)
 	}
 	return routerErr, nil

@@ -345,3 +345,24 @@ func TestRemoveSaveErrorSurfaces(t *testing.T) {
 		t.Fatal("Remove should surface a save-state error")
 	}
 }
+
+// TestRemoveLastAgentClearsState verifies that removing the final managed agent
+// is allowed to empty the state file — Remove must thread agentstate.AllowEmpty
+// past the empty-clobber guard, or this legitimate case would be refused.
+func TestRemoveLastAgentClearsState(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	s := &agentstate.State{Agents: []agentstate.Agent{{ID: "only", Key: "k", InboxChannel: "i"}}}
+	if err := agentstate.Save(statePath, s); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := Remove(context.Background(), Deps{StatePath: statePath}, "only"); err != nil {
+		t.Fatalf("removing the last agent should succeed: %v", err)
+	}
+	reloaded, err := agentstate.Load(statePath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(reloaded.Agents) != 0 {
+		t.Fatalf("state should be empty after removing the last agent, got %+v", reloaded.Agents)
+	}
+}

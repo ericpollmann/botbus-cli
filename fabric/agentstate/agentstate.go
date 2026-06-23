@@ -24,7 +24,8 @@ type Daemon struct {
 }
 
 // Agent is one locally-managed fabric participant. Key and Cursor are secrets/
-// state that never leave this file except as auth headers / resume tokens.
+// state that never leave this file (or its sibling 0600 *.bak backups) except
+// as auth headers / resume tokens.
 type Agent struct {
 	ID           string        `json:"id"`
 	Key          string        `json:"key"`
@@ -76,14 +77,63 @@ func Load(path string) (*State, error) {
 	return &s, nil
 }
 
+// backupGenerations is how many prior versions of the state file are retained
+// alongside the live file (state.json.bak, state.json.bak.1, ...). The agent
+// capability keys live only in this file, so a wipe must stay recoverable.
+const backupGenerations = 3
+
+// saveOpts holds the resolved options for a Save call.
+type saveOpts struct {
+	allowEmpty bool
+}
+
+// SaveOption configures a Save call.
+type SaveOption func(*saveOpts)
+
+// AllowEmpty permits Save to write a State with no agents over a file that
+// currently has agents. Without it, Save refuses such a write to guard against
+// a downgraded or buggy binary wiping every agent's capability key. The one
+// legitimate empty case is removing the last locally-managed agent, which must
+// thread this option through.
+func AllowEmpty() SaveOption {
+	return func(o *saveOpts) { o.allowEmpty = true }
+}
+
 // Save writes the state file atomically (temp + rename) with mode 0600,
-// creating the parent directory if needed.
-func Save(path string, s *State) error {
+// creating the parent directory if needed. Before overwriting an existing
+// file, its current contents are rotated into a small ring of backups so an
+// accidental wipe — e.g. by a downgraded binary — stays recoverable. Save also
+// refuses to replace a populated agent list with an empty one unless
+// AllowEmpty is passed.
+func Save(path string, s *State, opts ...SaveOption) error {
+	var o saveOpts
+	for _, fn := range opts {
+		fn(&o)
+	}
+
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	exists := err == nil
+
+	if exists && len(s.Agents) == 0 && !o.allowEmpty {
+		if n := agentCount(existing); n > 0 {
+			return fmt.Errorf("agentstate: refusing to overwrite %d agent(s) in %s with an empty state (pass AllowEmpty to clear intentionally)", n, path)
+		}
+	}
+
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
 	}
+	if exists {
+		if err := rotateBackups(path, existing); err != nil {
+			return err
+		}
+	}
+
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
@@ -93,6 +143,39 @@ func Save(path string, s *State) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// agentCount reports how many agents the serialized state holds. Unparseable
+// bytes report 0 so the empty-clobber guard never blocks on a prior file it
+// cannot interpret.
+func agentCount(b []byte) int {
+	var s State
+	if json.Unmarshal(b, &s) != nil {
+		return 0
+	}
+	return len(s.Agents)
+}
+
+// backupName returns the filename for the given backup generation: generation
+// 0 is the most recent (state.json.bak), higher numbers are older.
+func backupName(path string, gen int) string {
+	if gen == 0 {
+		return path + ".bak"
+	}
+	return fmt.Sprintf("%s.bak.%d", path, gen)
+}
+
+// rotateBackups shifts the existing backups one generation older (dropping the
+// oldest) and writes current as the freshest generation. current is the live
+// file's contents captured before it is overwritten; the backup carries the
+// same 0600 permissions because it holds the same secret keys.
+func rotateBackups(path string, current []byte) error {
+	for i := backupGenerations - 2; i >= 0; i-- {
+		if err := os.Rename(backupName(path, i), backupName(path, i+1)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return os.WriteFile(backupName(path, 0), current, 0o600)
 }
 
 // Get returns the agent with the given id and whether it was found.
