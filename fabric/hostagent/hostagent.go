@@ -127,6 +127,59 @@ func EnsureRoot(ctx context.Context, d Deps) (agentstate.Agent, error) {
 	return CreateRoot(ctx, d)
 }
 
+// UpdateFields are the optionally-changed fields; a nil pointer means "leave
+// as-is", while a non-nil pointer (including to the empty string) sets the
+// field — so --focus "" explicitly clears Focus.
+type UpdateFields struct {
+	Focus, Interest, Parent, Mode, ModelTier *string
+}
+
+// Update loads the local agent by name, applies the non-nil fields, persists
+// the change to local state, then RE-REGISTERS it with the router (Register is
+// idempotent, so this replays the desired spec). Identity (ID/Key/InboxChannel)
+// is never changed. It errors if no local agent has that name. Order matches
+// Create's "local is canonical" stance: local state is saved before the router
+// call, so a Register failure keeps the local change and surfaces the error.
+func Update(ctx context.Context, d Deps, name string, f UpdateFields) (agentstate.Agent, error) {
+	a, ok, err := GetByName(d.StatePath, name)
+	if err != nil {
+		return agentstate.Agent{}, err
+	}
+	if !ok {
+		return agentstate.Agent{}, fmt.Errorf("no local agent named %q", name)
+	}
+
+	if f.Focus != nil {
+		a.Focus = *f.Focus
+	}
+	if f.Interest != nil {
+		a.Interest = *f.Interest
+	}
+	if f.Parent != nil {
+		a.Parent = *f.Parent
+	}
+	if f.Mode != nil {
+		a.Mode = *f.Mode
+	}
+	if f.ModelTier != nil {
+		a.ModelTier = *f.ModelTier
+	}
+
+	s, err := agentstate.Load(d.StatePath)
+	if err != nil {
+		return agentstate.Agent{}, fmt.Errorf("load state: %w", err)
+	}
+	s.Upsert(a)
+	if err := agentstate.Save(d.StatePath, s); err != nil {
+		return agentstate.Agent{}, fmt.Errorf("save state: %w", err)
+	}
+
+	if err := d.Control.Register(ctx, a.ID, a.Key, specOf(a)); err != nil {
+		return agentstate.Agent{}, fmt.Errorf("register with router: %w", err)
+	}
+	return a, nil
+}
+
 // GetByName returns the locally-registered agent with the given name (the human
 // addressing alias, not the opaque id) and whether one was found.
 func GetByName(statePath, name string) (agentstate.Agent, bool, error) {

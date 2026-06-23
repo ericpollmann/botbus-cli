@@ -14,6 +14,7 @@ import (
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
 	"github.com/ericpollmann/botbus-cli/fabric/control"
 	"github.com/ericpollmann/botbus-proto/hubclient"
+	"github.com/ericpollmann/botbus-proto/wire"
 )
 
 // stubControl mints a fresh id per call and accepts any Bearer-authenticated
@@ -364,5 +365,129 @@ func TestRemoveLastAgentClearsState(t *testing.T) {
 	}
 	if len(reloaded.Agents) != 0 {
 		t.Fatalf("state should be empty after removing the last agent, got %+v", reloaded.Agents)
+	}
+}
+
+// stubControlRegister returns a control client whose PUT handler records the
+// path id, Authorization header, and decoded AgentSpec body of the last
+// register it received, so a test can assert Update re-registered the new spec.
+func stubControlRegister(t *testing.T, gotID, gotAuth *string, gotSpec *wire.AgentSpec) *control.Client {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /v1/agents/{id}", func(w http.ResponseWriter, r *http.Request) {
+		*gotID = r.PathValue("id")
+		*gotAuth = r.Header.Get("Authorization")
+		_ = json.NewDecoder(r.Body).Decode(gotSpec)
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return control.NewClient(srv.URL)
+}
+
+// Update applies the non-nil fields to the local agent, persists them, and
+// re-registers the new spec with the router. Identity (ID/Key/InboxChannel) is
+// never changed.
+func TestUpdateAppliesFieldsPersistsAndReRegisters(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	s := &agentstate.State{Agents: []agentstate.Agent{{
+		ID: "minted-a", Key: "key-a", Name: "myth-sdk", InboxChannel: "inbox-a",
+		Focus: "old focus", Interest: "old interest", Mode: "session",
+	}}}
+	if err := agentstate.Save(statePath, s); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	var gotID, gotAuth string
+	var gotSpec wire.AgentSpec
+	deps := Deps{Control: stubControlRegister(t, &gotID, &gotAuth, &gotSpec), StatePath: statePath}
+
+	newFocus, newInterest := "release freeze — prioritize SDK", "new interest"
+	got, err := Update(context.Background(), deps, "myth-sdk", UpdateFields{Focus: &newFocus, Interest: &newInterest})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	// Returned agent reflects the changes; identity untouched.
+	if got.Focus != newFocus || got.Interest != newInterest {
+		t.Fatalf("returned agent not updated: %+v", got)
+	}
+	if got.ID != "minted-a" || got.Key != "key-a" || got.InboxChannel != "inbox-a" || got.Name != "myth-sdk" {
+		t.Fatalf("identity must be unchanged: %+v", got)
+	}
+
+	// Persisted to local state.
+	reloaded, _ := agentstate.Load(statePath)
+	persisted, ok := reloaded.Get("minted-a")
+	if !ok || persisted.Focus != newFocus || persisted.Interest != newInterest {
+		t.Fatalf("changes not persisted: %+v ok=%v", persisted, ok)
+	}
+	if persisted.InboxChannel != "inbox-a" || persisted.Name != "myth-sdk" {
+		t.Fatalf("persisted identity changed: %+v", persisted)
+	}
+
+	// Re-registered the NEW spec with the bound key.
+	if gotID != "minted-a" || gotAuth != "Bearer key-a" {
+		t.Fatalf("router got id=%q auth=%q, want minted-a / Bearer key-a", gotID, gotAuth)
+	}
+	if gotSpec.Focus != newFocus || gotSpec.Interest != newInterest {
+		t.Fatalf("re-registered spec not updated: %+v", gotSpec)
+	}
+	if gotSpec.InboxChannel != "inbox-a" || gotSpec.Name != "myth-sdk" {
+		t.Fatalf("re-registered spec identity changed: %+v", gotSpec)
+	}
+}
+
+// A nil field leaves the value unchanged; a non-nil empty string clears it.
+func TestUpdateNilLeavesFieldEmptyClears(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	s := &agentstate.State{Agents: []agentstate.Agent{{
+		ID: "minted-a", Key: "key-a", Name: "n", InboxChannel: "i",
+		Focus: "keep me", Interest: "clear me", Parent: "p", Mode: "session", ModelTier: "opus",
+	}}}
+	if err := agentstate.Save(statePath, s); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	var gotID, gotAuth string
+	var gotSpec wire.AgentSpec
+	deps := Deps{Control: stubControlRegister(t, &gotID, &gotAuth, &gotSpec), StatePath: statePath}
+
+	// Focus omitted (nil) → unchanged; Interest set to "" → cleared.
+	empty := ""
+	got, err := Update(context.Background(), deps, "n", UpdateFields{Interest: &empty})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if got.Focus != "keep me" {
+		t.Fatalf("nil Focus should be left unchanged, got %q", got.Focus)
+	}
+	if got.Interest != "" {
+		t.Fatalf("empty-string Interest should clear the field, got %q", got.Interest)
+	}
+	if got.Parent != "p" || got.ModelTier != "opus" || got.Mode != "session" {
+		t.Fatalf("other nil fields should be unchanged: %+v", got)
+	}
+
+	reloaded, _ := agentstate.Load(statePath)
+	persisted, _ := reloaded.Get("minted-a")
+	if persisted.Focus != "keep me" || persisted.Interest != "" {
+		t.Fatalf("nil/clear semantics not persisted: %+v", persisted)
+	}
+}
+
+// Updating an unknown name errors.
+func TestUpdateUnknownNameErrors(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := agentstate.Save(statePath, &agentstate.State{Agents: []agentstate.Agent{{ID: "x", Name: "present"}}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	var gotID, gotAuth string
+	var gotSpec wire.AgentSpec
+	deps := Deps{Control: stubControlRegister(t, &gotID, &gotAuth, &gotSpec), StatePath: statePath}
+
+	focus := "x"
+	if _, err := Update(context.Background(), deps, "missing", UpdateFields{Focus: &focus}); err == nil {
+		t.Fatal("updating an unknown local agent should error")
+	}
+	if gotID != "" {
+		t.Fatalf("router must not be called for an unknown agent, got id=%q", gotID)
 	}
 }

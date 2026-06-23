@@ -60,6 +60,42 @@ func agentCmd(args []string) {
 		}
 		fmt.Printf("created agent %q\n  id: %s\n  inbox channel: %s\n  mode: %s\n", a.Name, a.ID, a.InboxChannel, a.Mode)
 		fmt.Println("  key stored in", agentstate.DefaultPath())
+	case "update":
+		fs := flag.NewFlagSet("agent update", flag.ExitOnError)
+		name := fs.String("name", "", "agent name to update (required)")
+		focus := fs.String("focus", "", "platform focus-area description")
+		interest := fs.String("interest", "", "topics/channels of interest")
+		parent := fs.String("parent", "", "escalation target agent name")
+		mode := fs.String("mode", "", "delivery mode: session|spawn")
+		tier := fs.String("tier", "", "model tier label (opus|sonnet|haiku|fable)")
+		_ = fs.Parse(args[1:])
+		if *name == "" {
+			fmt.Fprintln(os.Stderr, "update: --name is required")
+			os.Exit(1)
+		}
+		// Build UpdateFields from ONLY the flags the user actually set, so an
+		// omitted --focus leaves Focus untouched while --focus "" clears it.
+		var fields hostagent.UpdateFields
+		fs.Visit(func(fl *flag.Flag) {
+			switch fl.Name {
+			case "focus":
+				fields.Focus = focus
+			case "interest":
+				fields.Interest = interest
+			case "parent":
+				fields.Parent = parent
+			case "mode":
+				fields.Mode = mode
+			case "tier":
+				fields.ModelTier = tier
+			}
+		})
+		a, err := hostagent.Update(ctx, realDeps(), *name, fields)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "update:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("updated agent %q\n  id: %s\n  focus: %s\n  interest: %s\n", a.Name, a.ID, a.Focus, a.Interest)
 	case "list":
 		agents, err := hostagent.List(agentstate.DefaultPath())
 		if err != nil {
@@ -109,5 +145,5 @@ func agentCmd(args []string) {
 }
 
 func agentUsage() {
-	fmt.Fprintln(os.Stderr, "usage: botbus agent <create|list|remove> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: botbus agent <create|update|list|remove> [flags]")
 }
