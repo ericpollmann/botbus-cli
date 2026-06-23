@@ -25,6 +25,61 @@ func TestSetCursorPersists(t *testing.T) {
 	}
 }
 
+func TestDefaultPath(t *testing.T) {
+	t.Run("BOTBUS_STATE override wins", func(t *testing.T) {
+		t.Setenv("BOTBUS_STATE", "/custom/state.json")
+		if got := DefaultPath(); got != "/custom/state.json" {
+			t.Fatalf("DefaultPath = %q, want /custom/state.json", got)
+		}
+	})
+
+	t.Run("falls back to home dir when unset", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("BOTBUS_STATE", "")
+		t.Setenv("HOME", home)
+		want := filepath.Join(home, ".botbus", "state.json")
+		if got := DefaultPath(); got != want {
+			t.Fatalf("DefaultPath = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("falls back to relative path when home is unknown", func(t *testing.T) {
+		t.Setenv("BOTBUS_STATE", "")
+		t.Setenv("HOME", "") // makes os.UserHomeDir error on unix
+		if got := DefaultPath(); got != ".botbus/state.json" {
+			t.Fatalf("DefaultPath = %q, want .botbus/state.json", got)
+		}
+	})
+}
+
+func TestLoadReadErrorNotIsNotExist(t *testing.T) {
+	// A directory exists but cannot be read as a file: os.ReadFile returns an
+	// error that is *not* IsNotExist, so Load must surface it.
+	dir := t.TempDir()
+	if _, err := Load(dir); err == nil {
+		t.Fatal("Load on a directory path should error")
+	}
+}
+
+func TestLoadMalformedJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte("{not valid json"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load on malformed JSON should error")
+	}
+}
+
+func TestSetCursorLoadError(t *testing.T) {
+	// A directory path makes the internal Load fail, so SetCursor must return
+	// the load error before attempting any save.
+	dir := t.TempDir()
+	if err := SetCursor(dir, "a", "cursor-1"); err == nil {
+		t.Fatal("SetCursor with an unreadable path should error")
+	}
+}
+
 func TestLoadMissingReturnsEmpty(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	s, err := Load(path)
