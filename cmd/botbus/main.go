@@ -197,6 +197,11 @@ func main() {
 		workspaceCmd(os.Args[2:])
 		return
 	}
+	// Fetch the role-aware briefing for a channel/agent URL and print it.
+	if len(os.Args) > 1 && os.Args[1] == "attach" {
+		attachCmd(os.Args[2:])
+		return
+	}
 
 	args := parseArgs(os.Args[1:])
 
