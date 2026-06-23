@@ -6,13 +6,16 @@ package main
 // liveBoardModel (board_live.go). Logic reuses hostagent/workspace/onboardChildOps.
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
+	"github.com/ericpollmann/botbus-cli/fabric/daemon"
 	"github.com/ericpollmann/botbus-cli/fabric/hostagent"
 	"github.com/ericpollmann/botbus-cli/fabric/profile"
 )
@@ -87,4 +90,102 @@ func ensureWorkspaceRoot(ctx context.Context, d hostagent.Deps, profilePath, wsN
 		return agentstate.Agent{}, err
 	}
 	return root, nil
+}
+
+// ask prints prompt to out and returns the next trimmed input line.
+func ask(r *bufio.Reader, out io.Writer, prompt string) string {
+	fmt.Fprint(out, prompt)
+	line, _ := readLine(r) // readLine is defined in console.go; EOF yields ""
+	return strings.TrimSpace(line)
+}
+
+// rootConnect builds local-MCP connect instructions for the operator's root,
+// mirroring the daemon's CreateChild shape (http://<addr>/a/<key>).
+func rootConnect(addr string, root agentstate.Agent) daemon.ConnectInstructions {
+	endpoint := fmt.Sprintf("http://%s/a/%s", addr, root.Key)
+	return daemon.ConnectInstructions{
+		MCPCommand:  fmt.Sprintf("claude mcp add --transport http %s %s", root.Name, endpoint),
+		MCPEndpoint: endpoint,
+		ChannelURL:  fmt.Sprintf("https://%s.%s/", root.InboxChannel, domain),
+	}
+}
+
+// onboardSteps runs the imperative guided steps 1-5 and returns the workspace
+// root channel URL the caller watches in the live board (step 6). rebuild
+// produces the runtime Ops bound to the freshly-saved profile so step 5's
+// CreateChild parents the new agent under the workspace root.
+func onboardSteps(in io.Reader, out io.Writer, d hostagent.Deps, profilePath string, rebuild func(*profile.Profile) daemon.Ops) (string, error) {
+	r := bufio.NewReader(in)
+	ctx := context.Background()
+
+	fmt.Fprint(out, "botbus onboarding — let's set up your workspace.\n\n")
+
+	user := ask(r, out, "Your name: ")
+	if user == "" {
+		return "", fmt.Errorf("name is required")
+	}
+	wsName := ask(r, out, "Workspace name: ")
+	if wsName == "" {
+		return "", fmt.Errorf("workspace name is required")
+	}
+
+	// Step 1: create (or reuse) the workspace org-root = the operator's root.
+	root, err := ensureWorkspaceRoot(ctx, d, profilePath, wsName, user)
+	if err != nil {
+		return "", fmt.Errorf("create workspace: %w", err)
+	}
+	channelURL := fmt.Sprintf("https://%s.%s/", root.InboxChannel, domain)
+	fmt.Fprintf(out, "\n✓ workspace %q is live: %s\n", wsName, channelURL)
+
+	// Rebuild Ops against the saved profile so CreateChild sees the new root.
+	p, _ := profile.Load(profilePath)
+	ops := rebuild(p)
+
+	// Step 2: connect this session (local-MCP paste prompt + terminal fallback).
+	inst := rootConnect(ops.Addr(), root)
+	fmt.Fprintln(out, "\n── Connect THIS Claude Code session ──")
+	fmt.Fprintln(out, localPastePrompt(wsName, "workspace owner", inst))
+	fmt.Fprintf(out, "\n(terminal fallback: %s)\n", inst.MCPCommand)
+
+	// Step 3: workspace directive (optional).
+	directive := ask(r, out, "\nWorkspace directive (optional, Enter to skip): ")
+	if directive != "" {
+		if _, uerr := hostagent.Update(ctx, d, wsName, hostagent.UpdateFields{Focus: &directive}); uerr != nil {
+			fmt.Fprintln(out, "  (couldn't set directive:", uerr, ")")
+		} else {
+			if p2, lerr := profile.Load(profilePath); lerr == nil && p2 != nil {
+				p2.Framing = directive // injected into child welcomes
+				_ = profile.Save(profilePath, p2)
+			}
+			fmt.Fprintln(out, "✓ directive set")
+		}
+	}
+
+	// Step 4: invite teammates (loop until a blank name).
+	for {
+		teammate := ask(r, out, "\nInvite a teammate (name, Enter to finish): ")
+		if teammate == "" {
+			break
+		}
+		joinURL, ierr := workspaceInvite(ctx, d, teammate, wsName)
+		if ierr != nil {
+			fmt.Fprintln(out, "  (invite failed:", ierr, ")")
+			continue
+		}
+		fmt.Fprintln(out, invitePastePrompt(teammate, joinURL))
+	}
+
+	// Step 5: add a standing agent (optional).
+	agentName := ask(r, out, "\nAdd a standing agent/role (name, Enter to skip): ")
+	if agentName != "" {
+		focus := ask(r, out, "  Its focus: ")
+		msg, aerr := onboardChildOps(ctx, ops, agentName, focus)
+		if aerr != nil {
+			fmt.Fprintln(out, "  (couldn't create agent:", aerr, ")")
+		} else {
+			fmt.Fprintf(out, "\nPaste into a NEW Claude Code session to run %s:\n%s\n", agentName, msg)
+		}
+	}
+
+	return channelURL, nil
 }

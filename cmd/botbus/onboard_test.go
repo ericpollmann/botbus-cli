@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -10,8 +11,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
+	"github.com/ericpollmann/botbus-cli/fabric/daemon"
 	"github.com/ericpollmann/botbus-cli/fabric/hostagent"
 	"github.com/ericpollmann/botbus-cli/fabric/profile"
+	"github.com/ericpollmann/botbus-proto/wire"
 )
 
 func TestSeedSampleTaskPostsStartedFrame(t *testing.T) {
@@ -112,5 +116,68 @@ func TestEnsureWorkspaceRootSurfacesCorruptProfile(t *testing.T) {
 	got, _ := os.ReadFile(profilePath)
 	if string(got) != "{not valid json" {
 		t.Fatalf("corrupt profile must not be overwritten, got %q", got)
+	}
+}
+
+// stubOnboardOps satisfies daemon.Ops for the orchestration test: CreateChild
+// returns canned local-MCP connect instructions; the rest are no-ops.
+type stubOnboardOps struct{ createdName, createdFocus string }
+
+func (s *stubOnboardOps) Roster(context.Context) ([]wire.AgentNode, error) { return nil, nil }
+func (s *stubOnboardOps) CreateChild(_ context.Context, name, focus string) (agentstate.Agent, daemon.ConnectInstructions, error) {
+	s.createdName, s.createdFocus = name, focus
+	return agentstate.Agent{Name: name}, daemon.ConnectInstructions{
+		MCPCommand: "claude mcp add --transport http " + name + " http://127.0.0.1:8765/a/ck",
+		ChannelURL: "https://child.botbus.ai/",
+	}, nil
+}
+func (s *stubOnboardOps) Send(context.Context, string, daemon.SendArgs) error    { return nil }
+func (s *stubOnboardOps) ReadInbox(context.Context, string, int) (string, error) { return "", nil }
+func (s *stubOnboardOps) EnsureRoot(context.Context) (agentstate.Agent, error) {
+	return agentstate.Agent{}, nil
+}
+func (s *stubOnboardOps) Addr() string { return "127.0.0.1:8765" }
+
+func TestOnboardStepsHappyPath(t *testing.T) {
+	d := fakeDeps(t)
+	profilePath := filepath.Join(t.TempDir(), "profile.json")
+	stub := &stubOnboardOps{}
+	rebuild := func(*profile.Profile) daemon.Ops { return stub }
+
+	// name / workspace / directive / teammate / (finish invites) / agent / focus
+	in := strings.NewReader("eric\nmythwork\nShip v1\nethan\n\nmyth-compiler\nthe compiler\n")
+	var out bytes.Buffer
+
+	boardURL, err := onboardSteps(in, &out, d, profilePath, rebuild)
+	if err != nil {
+		t.Fatalf("onboardSteps: %v", err)
+	}
+	if !strings.Contains(boardURL, ".botbus.ai") {
+		t.Fatalf("boardURL should be the workspace channel, got %q", boardURL)
+	}
+
+	s := out.String()
+	if !strings.Contains(s, "claude mcp add") {
+		t.Fatalf("step 2 should print the local connect command, got:\n%s", s)
+	}
+	if !strings.Contains(s, "ethan") || !strings.Contains(s, "?user=ethan") {
+		t.Fatalf("step 4 should print ethan's join URL, got:\n%s", s)
+	}
+	if stub.createdName != "myth-compiler" || stub.createdFocus != "the compiler" {
+		t.Fatalf("step 5 should create the agent via CreateChild, got name=%q focus=%q", stub.createdName, stub.createdFocus)
+	}
+
+	p, _ := profile.Load(profilePath)
+	if p.User != "eric" || p.Framing != "Ship v1" || p.Root.ID == "" {
+		t.Fatalf("profile not set up by the wizard: %+v", p)
+	}
+}
+
+func TestOnboardStepsRequiresName(t *testing.T) {
+	d := fakeDeps(t)
+	profilePath := filepath.Join(t.TempDir(), "profile.json")
+	rebuild := func(*profile.Profile) daemon.Ops { return &stubOnboardOps{} }
+	if _, err := onboardSteps(strings.NewReader("\n"), &bytes.Buffer{}, d, profilePath, rebuild); err == nil {
+		t.Fatal("an empty name should error")
 	}
 }
