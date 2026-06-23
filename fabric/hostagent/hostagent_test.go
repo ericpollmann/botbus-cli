@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -207,24 +208,141 @@ func TestEnsureRootCreatesWhenAbsent(t *testing.T) {
 	}
 }
 
-func TestRemoveDeletesLocalAgent(t *testing.T) {
+// stubControlDeregister returns a control client whose DELETE handler records
+// the path id + Authorization it received and replies with the given status.
+func stubControlDeregister(t *testing.T, status int, gotID, gotAuth *string) *control.Client {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("DELETE /v1/agents/{id}", func(w http.ResponseWriter, r *http.Request) {
+		*gotID = r.PathValue("id")
+		*gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(status)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return control.NewClient(srv.URL)
+}
+
+// Remove deregisters the agent from the router (with its bound key) AND deletes
+// it from local state.
+func TestRemoveDeregistersAndDeletesLocal(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
-	s := &agentstate.State{Agents: []agentstate.Agent{{ID: "a"}, {ID: "b"}}}
+	s := &agentstate.State{Agents: []agentstate.Agent{
+		{ID: "minted-a", Key: "key-a", Name: "rftest"},
+		{ID: "minted-b", Key: "key-b"},
+	}}
 	if err := agentstate.Save(statePath, s); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if err := Remove(statePath, "a"); err != nil {
+	var gotID, gotAuth string
+	deps := Deps{Control: stubControlDeregister(t, http.StatusNoContent, &gotID, &gotAuth), StatePath: statePath}
+
+	routerErr, err := Remove(context.Background(), deps, "minted-a")
+	if err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
+	if routerErr != nil {
+		t.Fatalf("routerErr = %v, want nil", routerErr)
+	}
+	if gotID != "minted-a" || gotAuth != "Bearer key-a" {
+		t.Fatalf("router got id=%q auth=%q, want minted-a / Bearer key-a", gotID, gotAuth)
+	}
 	reloaded, _ := agentstate.Load(statePath)
-	if _, ok := reloaded.Get("a"); ok {
-		t.Fatal("agent a should be gone")
+	if _, ok := reloaded.Get("minted-a"); ok {
+		t.Fatal("agent minted-a should be gone locally")
 	}
-	if _, ok := reloaded.Get("b"); !ok {
-		t.Fatal("agent b should remain")
+	if _, ok := reloaded.Get("minted-b"); !ok {
+		t.Fatal("agent minted-b should remain")
 	}
-	if err := Remove(statePath, "missing"); err == nil {
-		t.Fatal("removing unknown agent should error")
+}
+
+// The router call is best-effort: a router failure still removes local state and
+// is surfaced separately (so the host stops managing the agent regardless).
+func TestRemoveStillDeletesLocalWhenRouterFails(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	s := &agentstate.State{Agents: []agentstate.Agent{{ID: "minted-a", Key: "key-a"}}}
+	if err := agentstate.Save(statePath, s); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	var gotID, gotAuth string
+	deps := Deps{Control: stubControlDeregister(t, http.StatusInternalServerError, &gotID, &gotAuth), StatePath: statePath}
+
+	routerErr, err := Remove(context.Background(), deps, "minted-a")
+	if err != nil {
+		t.Fatalf("Remove (local) should succeed even when the router fails: %v", err)
+	}
+	if routerErr == nil {
+		t.Fatal("routerErr should be non-nil when the router rejects deregister")
+	}
+	reloaded, _ := agentstate.Load(statePath)
+	if _, ok := reloaded.Get("minted-a"); ok {
+		t.Fatal("local agent must be removed even when the router call fails")
+	}
+}
+
+// An unknown local id errors and never calls the router (no key to present).
+func TestRemoveUnknownLocalAgentErrors(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := agentstate.Save(statePath, &agentstate.State{Agents: []agentstate.Agent{{ID: "x"}}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	var gotID, gotAuth string
+	deps := Deps{Control: stubControlDeregister(t, http.StatusNoContent, &gotID, &gotAuth), StatePath: statePath}
+
+	routerErr, err := Remove(context.Background(), deps, "missing")
+	if err == nil {
+		t.Fatal("removing an unknown local agent should error")
+	}
+	if routerErr != nil {
+		t.Fatalf("routerErr should be nil for an unknown agent, got %v", routerErr)
+	}
+	if gotID != "" {
+		t.Fatalf("router must not be called for an unknown agent, got id=%q", gotID)
+	}
+}
+
+// With no Control configured, Remove is local-only (best-effort router skipped).
+func TestRemoveNilControlSkipsRouter(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := agentstate.Save(statePath, &agentstate.State{Agents: []agentstate.Agent{{ID: "x", Key: "k"}}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	routerErr, err := Remove(context.Background(), Deps{StatePath: statePath}, "x")
+	if err != nil {
+		t.Fatalf("Remove with nil Control: %v", err)
+	}
+	if routerErr != nil {
+		t.Fatalf("routerErr should be nil with nil Control, got %v", routerErr)
+	}
+	reloaded, _ := agentstate.Load(statePath)
+	if _, ok := reloaded.Get("x"); ok {
+		t.Fatal("agent should be removed locally with nil Control")
+	}
+}
+
+// A corrupt state file makes Load fail; Remove surfaces it as a fatal error.
+func TestRemoveLoadErrorSurfaces(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(statePath, []byte("{not valid json"), 0o600); err != nil {
+		t.Fatalf("seed corrupt: %v", err)
+	}
+	if _, err := Remove(context.Background(), Deps{StatePath: statePath}, "x"); err == nil {
+		t.Fatal("Remove should surface a load-state error on a corrupt state file")
+	}
+}
+
+// A save failure (here: the atomic-write temp path is occupied by a directory)
+// is surfaced as a fatal error even though Load and the router both succeeded.
+func TestRemoveSaveErrorSurfaces(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := agentstate.Save(statePath, &agentstate.State{Agents: []agentstate.Agent{{ID: "x", Key: "k"}}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := os.Mkdir(statePath+".tmp", 0o700); err != nil {
+		t.Fatalf("mkdir tmp blocker: %v", err)
+	}
+	if _, err := Remove(context.Background(), Deps{StatePath: statePath}, "x"); err == nil {
+		t.Fatal("Remove should surface a save-state error")
 	}
 }
 
@@ -237,7 +355,7 @@ func TestRemoveLastAgentClearsState(t *testing.T) {
 	if err := agentstate.Save(statePath, s); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if err := Remove(statePath, "only"); err != nil {
+	if _, err := Remove(context.Background(), Deps{StatePath: statePath}, "only"); err != nil {
 		t.Fatalf("removing the last agent should succeed: %v", err)
 	}
 	reloaded, err := agentstate.Load(statePath)

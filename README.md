@@ -126,7 +126,11 @@ botbus agent remove --name myth-compiler
 
 `create` mints a capability key and a private inbox channel, stores them in the
 local state file (`~/.botbus/state.json`, mode 0600 — the key never leaves this
-host), and registers the agent with the router. Configuration via environment:
+host), and registers the agent with the router. `remove` deregisters the agent
+from the router (best-effort, authenticated with the agent's own key) and
+deletes its local record — local state is removed even if the router is
+unreachable, so the host always stops managing the agent. Configuration via
+environment:
 
 - `ROUTER_URL` — router control API (default `https://router.botbus.ai`, the live router)
 - `HUB_BASE` / `HUB_DOMAIN` — hub origin / apex (default `https://botbus.ai` / `botbus.ai`)

@@ -151,23 +151,37 @@ func List(statePath string) ([]agentstate.Agent, error) {
 	return s.Agents, nil
 }
 
-// Remove deletes an agent from local state. The registry entry is left for the
-// daemon/operator to reap (presence simply expires); this removes only the
-// local identity record so the host stops managing the agent.
-func Remove(statePath, id string) error {
-	s, err := agentstate.Load(statePath)
+// Remove deregisters an agent from the router AND deletes it from local state.
+//
+// The router deregister is best-effort: the local identity record is ALWAYS
+// removed (so the host stops managing the agent) even when the router can't be
+// reached or rejects the key. The returned routerErr reports a best-effort
+// router failure (the registry entry then lingers until an operator/admin reaps
+// it); err is non-nil only when the agent isn't known locally or local state
+// couldn't be loaded/saved. The agent's key is read from local state before
+// removal so it can authenticate the deregister call.
+func Remove(ctx context.Context, d Deps, id string) (routerErr error, err error) {
+	s, err := agentstate.Load(d.StatePath)
 	if err != nil {
-		return fmt.Errorf("load state: %w", err)
+		return nil, fmt.Errorf("load state: %w", err)
 	}
-	if !s.Remove(id) {
-		return fmt.Errorf("agent %q not found locally", id)
+	a, ok := s.Get(id)
+	if !ok {
+		return nil, fmt.Errorf("agent %q not found locally", id)
 	}
-	// Removing the last managed agent legitimately leaves an empty list, so
-	// opt past Save's empty-clobber guard.
-	if err := agentstate.Save(statePath, s, agentstate.AllowEmpty()); err != nil {
-		return fmt.Errorf("save state: %w", err)
+	// Best-effort: deregister from the router before dropping local state, using
+	// the agent's bound key. A failure here (router down, key rotated, entry
+	// already reaped) must NOT block the local removal below.
+	if d.Control != nil {
+		routerErr = d.Control.Deregister(ctx, a.ID, a.Key)
 	}
-	return nil
+	s.Remove(id) // ok == true, so this always removes
+	// Removing the last managed agent legitimately leaves an empty list, so opt
+	// past Save's empty-clobber guard.
+	if err := agentstate.Save(d.StatePath, s, agentstate.AllowEmpty()); err != nil {
+		return routerErr, fmt.Errorf("save state: %w", err)
+	}
+	return routerErr, nil
 }
 
 // specOf maps a local agent entry to the control-API register body.

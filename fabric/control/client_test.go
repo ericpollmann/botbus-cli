@@ -99,3 +99,39 @@ func TestClientRejectsBadStatus(t *testing.T) {
 		t.Fatal("expected error on heartbeat with a rejected key")
 	}
 }
+
+// Deregister issues DELETE /v1/agents/{id} with the agent's key as Bearer and
+// treats 204 as success.
+func TestClientDeregister(t *testing.T) {
+	var gotMethod, gotPath, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath, gotAuth = r.Method, r.URL.Path, r.Header.Get("Authorization")
+		if gotAuth != "Bearer key-ok" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	if err := NewClient(srv.URL).Deregister(context.Background(), "minted-1", "key-ok"); err != nil {
+		t.Fatalf("Deregister: %v", err)
+	}
+	if gotMethod != http.MethodDelete || gotPath != "/v1/agents/minted-1" {
+		t.Fatalf("request = %s %s, want DELETE /v1/agents/minted-1", gotMethod, gotPath)
+	}
+	if gotAuth != "Bearer key-ok" {
+		t.Fatalf("auth = %q, want Bearer key-ok", gotAuth)
+	}
+}
+
+// A non-204 (e.g. wrong key → 401) is surfaced as an error.
+func TestClientDeregisterErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	if err := NewClient(srv.URL).Deregister(context.Background(), "id", "bad"); err == nil {
+		t.Fatal("expected error on 401, got nil")
+	}
+}
