@@ -10,6 +10,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"text/tabwriter"
@@ -43,6 +44,35 @@ func workspaceInvite(ctx context.Context, d hostagent.Deps, user, wsName string)
 	return fmt.Sprintf("https://%s.%s/?user=%s", member.InboxChannel, domain, url.QueryEscape(user)), nil
 }
 
+// parseInviteArgs parses `<user> --workspace <name>`, accepting the positional
+// user and the --workspace flag in ANY order. Go's flag.Parse stops at the first
+// non-flag arg, so a naive parse of `invite ethan --workspace x` would leave
+// --workspace unparsed (the bug this fixes); this interleaves flag-parsing with
+// positional collection so either ordering works. ok is false unless exactly one
+// positional (the user) and a non-empty workspace are present.
+func parseInviteArgs(args []string) (user, ws string, ok bool) {
+	fs := flag.NewFlagSet("workspace invite", flag.ContinueOnError)
+	fs.SetOutput(io.Discard) // workspaceUsage handles the user-facing message
+	wsp := fs.String("workspace", "", "workspace name to invite into (required)")
+	var positionals []string
+	rest := args
+	for {
+		if err := fs.Parse(rest); err != nil {
+			return "", "", false
+		}
+		rest = fs.Args()
+		if len(rest) == 0 {
+			break
+		}
+		positionals = append(positionals, rest[0])
+		rest = rest[1:]
+	}
+	if len(positionals) != 1 || positionals[0] == "" || *wsp == "" {
+		return "", "", false
+	}
+	return positionals[0], *wsp, true
+}
+
 // workspaceCmd handles `botbus workspace <sub> [args/flags]`.
 func workspaceCmd(args []string) {
 	if len(args) < 1 {
@@ -64,15 +94,12 @@ func workspaceCmd(args []string) {
 		}
 		fmt.Printf("created workspace %q\n  root id: %s\n  channel: https://%s.%s\n", a.Name, a.ID, a.InboxChannel, domain)
 	case "invite":
-		fs := flag.NewFlagSet("workspace invite", flag.ExitOnError)
-		ws := fs.String("workspace", "", "workspace name to invite into (required)")
-		_ = fs.Parse(args[1:])
-		if fs.NArg() < 1 || fs.Arg(0) == "" || *ws == "" {
+		user, ws, ok := parseInviteArgs(args[1:])
+		if !ok {
 			workspaceUsage()
 			os.Exit(2)
 		}
-		user := fs.Arg(0)
-		joinURL, err := workspaceInvite(ctx, realDeps(), user, *ws)
+		joinURL, err := workspaceInvite(ctx, realDeps(), user, ws)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "invite:", err)
 			os.Exit(1)
