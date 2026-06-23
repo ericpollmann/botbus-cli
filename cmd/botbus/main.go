@@ -192,6 +192,11 @@ func main() {
 		daemonCmd(os.Args[2:])
 		return
 	}
+	// Workspace lifecycle: an org-root anchor + invited members under it.
+	if len(os.Args) > 1 && os.Args[1] == "workspace" {
+		workspaceCmd(os.Args[2:])
+		return
+	}
 
 	args := parseArgs(os.Args[1:])
 
