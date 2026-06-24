@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -143,22 +144,9 @@ func TestRemoveErrorKeepsNode(t *testing.T) {
 		t.Fatal("onboardMsg should contain the error text")
 	}
 	// Message should mention the error.
-	if !contains(m.onboardMsg, "not local") {
+	if !strings.Contains(m.onboardMsg, "not local") {
 		t.Fatalf("onboardMsg should contain error text 'not local', got %q", m.onboardMsg)
 	}
-}
-
-// contains is a simple substring helper for test assertions.
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
-		func() bool {
-			for i := 0; i <= len(s)-len(sub); i++ {
-				if s[i:i+len(sub)] == sub {
-					return true
-				}
-			}
-			return false
-		}())
 }
 
 // TestRemoveNilRemoveIsNoop: `d` is a no-op when m.remove==nil (direct-chat path).
@@ -230,7 +218,7 @@ func TestRemoveRouterErrSurfacesInMsg(t *testing.T) {
 		}
 	}
 	// Message should mention the router error.
-	if !contains(m.onboardMsg, "router") {
+	if !strings.Contains(m.onboardMsg, "router") {
 		t.Fatalf("onboardMsg should mention router error, got %q", m.onboardMsg)
 	}
 }
