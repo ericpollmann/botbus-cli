@@ -65,7 +65,7 @@ func ensureWorkspaceRoot(ctx context.Context, d hostagent.Deps, profilePath, wsN
 	}
 	if ok {
 		// Reuse: re-register (no field changes) so a prior run that minted locally
-		// but failed to reach the router self-heals (mirrors hostagent.EnsureRoot).
+		// but failed to reach the router self-heals (Register is idempotent).
 		root, err = hostagent.Update(ctx, d, wsName, hostagent.UpdateFields{})
 		if err != nil {
 			return agentstate.Agent{}, err

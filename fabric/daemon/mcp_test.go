@@ -24,11 +24,11 @@ func callText(t *testing.T, res *mcp.CallToolResult) string {
 
 // fakeOps records calls so we can assert the tools route through Ops.
 type fakeOps struct {
-	sentFrom    string
-	sentArgs    SendArgs
-	readID      string
-	sendErr     error
-	readErr     error
+	sentFrom string
+	sentArgs SendArgs
+	readID   string
+	sendErr  error
+	readErr  error
 }
 
 func (f *fakeOps) Roster(_ context.Context) ([]wire.AgentNode, error) { return nil, nil }
@@ -42,9 +42,6 @@ func (f *fakeOps) Send(_ context.Context, from string, args SendArgs) error {
 func (f *fakeOps) ReadInbox(_ context.Context, id string, _ int) (string, error) {
 	f.readID = id
 	return "[]", f.readErr
-}
-func (f *fakeOps) EnsureRoot(_ context.Context) (agentstate.Agent, error) {
-	return agentstate.Agent{}, nil
 }
 func (f *fakeOps) Addr() string { return "127.0.0.1:8765" }
 

@@ -39,10 +39,6 @@ func (s *stubConsoleOps) ReadInbox(_ context.Context, _ string, _ int) (string, 
 	return "", nil
 }
 
-func (s *stubConsoleOps) EnsureRoot(_ context.Context) (agentstate.Agent, error) {
-	return agentstate.Agent{}, nil
-}
-
 func (s *stubConsoleOps) Addr() string { return "127.0.0.1:8765" }
 
 func (s *stubConsoleOps) Remove(_ context.Context, _ string) (error, error) { return nil, nil }

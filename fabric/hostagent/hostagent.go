@@ -99,34 +99,6 @@ func Create(ctx context.Context, d Deps, o CreateOpts) (agentstate.Agent, error)
 	return a, nil
 }
 
-// CreateRoot creates the workspace root — the first agent, with no parent.
-func CreateRoot(ctx context.Context, d Deps) (agentstate.Agent, error) {
-	return Create(ctx, d, CreateOpts{Name: "root"})
-}
-
-// EnsureRoot returns the workspace root, creating it on first run and reusing it
-// on subsequent runs. It exists because Create persists to local state BEFORE
-// Control.Register: a Register failure during first-run (e.g. router down)
-// leaves a local "root" while the caller's profile.Save never ran, so a naive
-// re-run of CreateRoot would hit "agent named root already exists locally" and
-// wedge forever. EnsureRoot instead reuses any existing local root and just
-// re-registers it (Register is idempotent). If the re-register still fails the
-// existing local root is left intact so a later run succeeds once the router is
-// reachable — and no second root is ever minted.
-func EnsureRoot(ctx context.Context, d Deps) (agentstate.Agent, error) {
-	existing, ok, err := GetByName(d.StatePath, "root")
-	if err != nil {
-		return agentstate.Agent{}, err
-	}
-	if ok {
-		if rerr := d.Control.Register(ctx, existing.ID, existing.Key, specOf(existing)); rerr != nil {
-			return agentstate.Agent{}, fmt.Errorf("re-register existing root: %w", rerr)
-		}
-		return existing, nil
-	}
-	return CreateRoot(ctx, d)
-}
-
 // UpdateFields are the optionally-changed fields; a nil pointer means "leave
 // as-is", while a non-nil pointer (including to the empty string) sets the
 // field — so --focus "" explicitly clears Focus.

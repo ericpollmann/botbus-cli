@@ -133,10 +133,7 @@ func (s *stubOnboardOps) CreateChild(_ context.Context, name, focus string) (age
 }
 func (s *stubOnboardOps) Send(context.Context, string, daemon.SendArgs) error    { return nil }
 func (s *stubOnboardOps) ReadInbox(context.Context, string, int) (string, error) { return "", nil }
-func (s *stubOnboardOps) EnsureRoot(context.Context) (agentstate.Agent, error) {
-	return agentstate.Agent{}, nil
-}
-func (s *stubOnboardOps) Addr() string { return "127.0.0.1:8765" }
+func (s *stubOnboardOps) Addr() string                                           { return "127.0.0.1:8765" }
 
 func (s *stubOnboardOps) Remove(_ context.Context, _ string) (error, error) { return nil, nil }
 
