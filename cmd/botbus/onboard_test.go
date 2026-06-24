@@ -138,6 +138,8 @@ func (s *stubOnboardOps) EnsureRoot(context.Context) (agentstate.Agent, error) {
 }
 func (s *stubOnboardOps) Addr() string { return "127.0.0.1:8765" }
 
+func (s *stubOnboardOps) Remove(_ context.Context, _ string) (error, error) { return nil, nil }
+
 func TestOnboardStepsHappyPath(t *testing.T) {
 	d := fakeDeps(t)
 	profilePath := filepath.Join(t.TempDir(), "profile.json")

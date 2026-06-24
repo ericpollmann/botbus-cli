@@ -93,6 +93,12 @@ func (d *Daemon) Send(ctx context.Context, fromAgent string, args SendArgs) erro
 	return Send(ctx, d.hub, d.state.Daemon.OutboundChannel, fromAgent, args)
 }
 
+// Remove deregisters + deletes a managed agent by id (the op behind the
+// console's `d` remove key).
+func (d *Daemon) Remove(ctx context.Context, id string) (routerErr error, err error) {
+	return hostagent.Remove(ctx, d.hostDeps(), id)
+}
+
 // ReadInbox long-polls one agent's inbox queue (the op behind MCP `next`),
 // returning the queued envelopes as a JSON array string. Errors if agentID is
 // not a managed runtime.

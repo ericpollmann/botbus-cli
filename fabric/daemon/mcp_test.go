@@ -48,6 +48,8 @@ func (f *fakeOps) EnsureRoot(_ context.Context) (agentstate.Agent, error) {
 }
 func (f *fakeOps) Addr() string { return "127.0.0.1:8765" }
 
+func (f *fakeOps) Remove(_ context.Context, _ string) (error, error) { return nil, nil }
+
 func TestToolSendRoutesThroughOps(t *testing.T) {
 	f := &fakeOps{}
 	ag := &agentMCP{ops: f, agentID: "a1", from: "alice"}

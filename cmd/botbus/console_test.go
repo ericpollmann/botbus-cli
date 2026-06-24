@@ -45,6 +45,8 @@ func (s *stubConsoleOps) EnsureRoot(_ context.Context) (agentstate.Agent, error)
 
 func (s *stubConsoleOps) Addr() string { return "127.0.0.1:8765" }
 
+func (s *stubConsoleOps) Remove(_ context.Context, _ string) (error, error) { return nil, nil }
+
 func TestOnboardChildOpsReturnsMCPInstruction(t *testing.T) {
 	ops := &stubConsoleOps{conn: daemon.ConnectInstructions{
 		MCPCommand: "claude mcp add --transport http botbus-cli http://127.0.0.1:8765/a/k",
