@@ -28,4 +28,9 @@ type Ops interface {
 	// Addr is the local MCP listen address (host:port) used to build connect
 	// instructions. *Daemon already implements it.
 	Addr() string
+	// Remove deregisters an agent from the router and deletes it from local
+	// state. routerErr is a best-effort router-side failure (local removal still
+	// happened); err is non-nil only when the agent isn't known locally or state
+	// I/O failed.
+	Remove(ctx context.Context, id string) (routerErr error, err error)
 }

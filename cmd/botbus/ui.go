@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ericpollmann/botbus-proto/wire"
 )
 
 const (
@@ -117,7 +118,15 @@ type model struct {
 	onboard      func(name, focus string) (connectURL string, err error)
 	onboardState onboardStep
 	onboardName  string
-	onboardMsg   string // result line shown under the roster (connect URL or error)
+	onboardMsg   string // connect URL, remove result, or error shown under the roster
+	// Remove flow (the `d` key in roster mode): a one-step y/n confirm that
+	// deregisters the selected agent. remove is the injected action (real impl
+	// wired in runConsole; nil in the direct-chat path). confirmingDelete gates
+	// the y/n capture; deleteTarget is the agent captured when `d` was pressed
+	// (so a moving cursor can't retarget the confirm).
+	remove           func(node wire.AgentNode) (routerErr error, err error)
+	confirmingDelete bool
+	deleteTarget     wire.AgentNode
 	// epoch is the session generation. It increments on each dip-in (when
 	// binding a new chatSession) and is captured into every wait Cmd's closure
 	// so Update can drop messages from a prior, torn-down session. The
@@ -406,6 +415,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.onboardState != onboardOff {
 			return m.updateOnboard(msg)
 		}
+		// Remove confirm active: capture y/n then act.
+		if m.confirmingDelete {
+			if k, ok := msg.(tea.KeyMsg); ok {
+				switch k.String() {
+				case "y", "Y":
+					routerErr, err := m.remove(m.deleteTarget)
+					if err != nil {
+						m.onboardMsg = "can't remove " + m.deleteTarget.Name + ": " + err.Error()
+					} else {
+						m.roster.removeByID(m.deleteTarget.ID)
+						m.onboardMsg = "removed " + m.deleteTarget.Name
+						if routerErr != nil {
+							m.onboardMsg += " (locally; router: " + routerErr.Error() + ")"
+						}
+					}
+					m.confirmingDelete = false
+					return m, nil
+				case "n", "N", "esc", "ctrl+c":
+					m.confirmingDelete = false
+					m.onboardMsg = ""
+					return m, nil
+				}
+				return m, nil // swallow other keys during confirm
+			}
+		}
 		if k, ok := msg.(tea.KeyMsg); ok {
 			switch k.String() {
 			case "esc", "ctrl+c":
@@ -416,6 +450,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.onboardState = onboardAskName
 					m.onboardName = ""
 					m.onboardMsg = ""
+				}
+				return m, nil
+			case "d":
+				// Begin a remove confirm only when a real action is wired (console
+				// mode) and there's a selected agent to remove.
+				if m.remove != nil {
+					sel := m.roster.selected()
+					if sel.InboxChannel != "" || sel.ID != "" {
+						m.confirmingDelete = true
+						m.deleteTarget = sel
+						m.onboardMsg = ""
+					}
 				}
 				return m, nil
 			}
@@ -686,6 +732,10 @@ func (m model) View() string {
 			out += "\n\n" + hintStyle.Render("onboard — new agent name:") + "\n" + m.input.View()
 		case onboardAskFocus:
 			out += "\n\n" + hintStyle.Render("onboard "+m.onboardName+" — focus area:") + "\n" + m.input.View()
+		}
+		// Remove confirm prompt.
+		if m.confirmingDelete {
+			out += "\n\n" + hintStyle.Render("remove "+m.deleteTarget.Name+"? (y/n)")
 		}
 		if m.onboardMsg != "" {
 			out += "\n\n" + hintStyle.Render(m.onboardMsg)

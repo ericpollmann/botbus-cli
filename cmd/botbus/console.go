@@ -94,6 +94,21 @@ func scopeToWorkspace(nodes []wire.AgentNode, orgRootID string) []wire.AgentNode
 	return out
 }
 
+// removeByID drops the node with id from the roster and clamps the cursor so it
+// stays within bounds (a no-op if id isn't present).
+func (m *rosterModel) removeByID(id string) {
+	out := m.nodes[:0]
+	for _, n := range m.nodes {
+		if n.ID != id {
+			out = append(out, n)
+		}
+	}
+	m.nodes = out
+	if m.cursor >= len(m.nodes) && m.cursor > 0 {
+		m.cursor = len(m.nodes) - 1
+	}
+}
+
 func (m rosterModel) selected() wire.AgentNode {
 	if len(m.nodes) == 0 {
 		return wire.AgentNode{}
@@ -197,7 +212,7 @@ func (m rosterModel) View() string {
 		}
 		b.WriteString(paletteStyle(nameColor(n.Name)).Render(line) + "\n")
 	}
-	b.WriteString("\n" + hintStyle.Render("↑/↓ navigate · enter dip in · o onboard · esc quit"))
+	b.WriteString("\n" + hintStyle.Render("↑/↓ navigate · enter dip in · o onboard · d remove · esc quit"))
 	return b.String()
 }
 
@@ -336,5 +351,8 @@ func wireConsoleChat(parent context.Context, m *model, ops daemon.Ops) {
 	}
 	m.onboard = func(name, focus string) (string, error) {
 		return onboardChildOps(context.Background(), ops, name, focus)
+	}
+	m.remove = func(node wire.AgentNode) (error, error) {
+		return ops.Remove(context.Background(), node.ID)
 	}
 }
