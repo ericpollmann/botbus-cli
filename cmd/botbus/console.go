@@ -179,7 +179,7 @@ func (m model) updateOnboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.onboardName = ""
 				return m, nil
 			}
-			m.onboardMsg = "tell your agent to connect to " + inst.ChannelURL
+			m.onboardMsg = "tell your agent to connect to " + inst.MCPEndpoint
 			m.onboardName = ""
 			return m, nil
 		}

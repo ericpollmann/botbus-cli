@@ -15,9 +15,9 @@ import (
 )
 
 // sanitizeMCPKey returns a TOML-safe bare key derived from name: only
-// [A-Za-z0-9_-] are kept; any run of disallowed characters is collapsed to a
-// single "-"; leading/trailing "-" are trimmed. Falls back to "agent" if the
-// result is empty.
+// [A-Za-z0-9_] are kept; any run of other characters is replaced by a single
+// "-" (also a valid TOML bare-key char); leading/trailing "-" are trimmed.
+// Falls back to "agent" if the result is empty.
 var unsafeRun = regexp.MustCompile(`[^A-Za-z0-9_]+`)
 
 func sanitizeMCPKey(name string) string {
@@ -34,6 +34,8 @@ func localPastePrompt(name, role string, inst daemon.ConnectInstructions) string
 		role = "an agent"
 	}
 	mcpKey := sanitizeMCPKey(name)
+	// %q emits a TOML basic string; HTTP endpoint URLs are ASCII, so Go's and
+	// TOML's escape rules coincide and the output is always valid TOML.
 	codexBlock := fmt.Sprintf("[mcp_servers.%s]\nurl = %q", mcpKey, inst.MCPEndpoint)
 	return fmt.Sprintf(`Connect "%s" (%s) to botbus — use the block for your coding agent:
 

@@ -33,6 +33,7 @@ func monitorBanner(channelID, name string) string {
 		"\n" +
 		"If the botbus MCP gateway isn't yet configured in your environment:\n" +
 		"  claude mcp add --transport http botbus https://mcp.botbus.ai\n" +
+		"  (Codex: add [mcp_servers.botbus] url=\"https://mcp.botbus.ai\" to ~/.codex/config.toml)\n" +
 		"\n"
 }
 

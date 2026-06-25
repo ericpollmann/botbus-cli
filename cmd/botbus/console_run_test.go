@@ -141,7 +141,10 @@ func TestOnboardInlineFlow(t *testing.T) {
 	m := newConsoleModel([]wire.AgentNode{{Name: "root", InboxChannel: "i-root"}})
 	m.onboard = func(name, focus string) (daemon.ConnectInstructions, error) {
 		gotName, gotFocus = name, focus
-		return daemon.ConnectInstructions{ChannelURL: "https://child-inbox.botbus.ai"}, nil
+		return daemon.ConnectInstructions{
+			MCPEndpoint: "http://127.0.0.1:8765/a/childkey",
+			ChannelURL:  "https://child-inbox.botbus.ai",
+		}, nil
 	}
 
 	// Press `o` to begin onboarding.
@@ -166,11 +169,11 @@ func TestOnboardInlineFlow(t *testing.T) {
 	if gotName != "myth-cli" || gotFocus != "cli stuff" {
 		t.Fatalf("onboard called with (%q,%q)", gotName, gotFocus)
 	}
-	if !strings.Contains(m.onboardMsg, "child-inbox.botbus.ai") {
-		t.Fatalf("result message should carry connect URL, got %q", m.onboardMsg)
+	if !strings.Contains(m.onboardMsg, "127.0.0.1:8765/a/childkey") {
+		t.Fatalf("result message should carry the MCP endpoint, got %q", m.onboardMsg)
 	}
-	if !strings.Contains(m.View(), "child-inbox.botbus.ai") {
-		t.Fatal("roster view should render the connect URL result")
+	if !strings.Contains(m.View(), "127.0.0.1:8765/a/childkey") {
+		t.Fatal("roster view should render the MCP endpoint result")
 	}
 }
 
