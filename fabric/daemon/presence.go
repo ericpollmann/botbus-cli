@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"log"
+	"sync/atomic"
 	"time"
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
@@ -10,9 +11,17 @@ import (
 	"github.com/ericpollmann/botbus-proto/wire"
 )
 
-// heartbeatEvery is the presence-refresh interval (well under the router's
-// 90s lease TTL). Var so tests can shrink it.
-var heartbeatEvery = 30 * time.Second
+// heartbeatEveryNs is the presence-refresh interval in nanoseconds (well under
+// the router's 90s lease TTL). Atomic so tests can shrink it race-free.
+var heartbeatEveryNs atomic.Int64
+
+func init() { heartbeatEveryNs.Store(int64(30 * time.Second)) }
+
+// getHeartbeatEvery reads the current interval. Use setHeartbeatEvery in tests.
+func getHeartbeatEvery() time.Duration { return time.Duration(heartbeatEveryNs.Load()) }
+
+// setHeartbeatEvery sets the interval (test helper).
+func setHeartbeatEvery(d time.Duration) { heartbeatEveryNs.Store(int64(d)) }
 
 // runPresence re-registers the agent once (idempotent; replays desired state
 // so a router/Redis restart self-heals) then heartbeats on a ticker until ctx
@@ -21,7 +30,7 @@ func runPresence(ctx context.Context, ctl *control.Client, a agentstate.Agent) {
 	if err := ctl.Register(ctx, a.ID, a.Key, specOf(a)); err != nil {
 		log.Printf("daemon: register %s: %v", a.ID, err)
 	}
-	t := time.NewTicker(heartbeatEvery)
+	t := time.NewTicker(getHeartbeatEvery())
 	defer t.Stop()
 	for {
 		select {

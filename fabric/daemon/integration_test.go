@@ -36,7 +36,8 @@ func TestInboxDeliversToNextTool(t *testing.T) {
 		Daemon: agentstate.Daemon{OutboundChannel: "out"},
 		Agents: []agentstate.Agent{{ID: "myth-compiler", Key: "key-xyz", Name: "myth-compiler", InboxChannel: "inbox-c"}},
 	}
-	d := &Daemon{state: st, hub: fake, runtimes: map[string]*AgentRuntime{"myth-compiler": rt}}
+	d := &Daemon{state: st, hub: fake, runtimes: map[string]*AgentRuntime{"myth-compiler": rt},
+		handlers: map[string]http.Handler{}, cancels: map[string]context.CancelFunc{}}
 	ag := &agentMCP{ops: d, agentID: "myth-compiler", from: "myth-compiler"}
 
 	deadline := time.After(2 * time.Second)
@@ -79,8 +80,8 @@ func TestRunServesMCPAndStops(t *testing.T) {
 	addr := ln.Addr().String()
 	ln.Close()
 
-	heartbeatEvery = 50 * time.Millisecond
-	defer func() { heartbeatEvery = 30 * time.Second }()
+	setHeartbeatEvery(50 * time.Millisecond)
+	defer setHeartbeatEvery(30 * time.Second)
 
 	st := &agentstate.State{
 		Daemon: agentstate.Daemon{RouterURL: ctl.URL, OutboundChannel: "out", MCPAddr: addr},
