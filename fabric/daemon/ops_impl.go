@@ -46,11 +46,6 @@ func (d *Daemon) hostDeps() hostagent.Deps {
 	}
 }
 
-// EnsureRoot creates the workspace root on first run, else reuses + re-registers it.
-func (d *Daemon) EnsureRoot(ctx context.Context) (agentstate.Agent, error) {
-	return hostagent.EnsureRoot(ctx, d.hostDeps())
-}
-
 // CreateChild registers a sub-agent under root (mint id + inbox channel +
 // register with Parent + seed welcome) and returns MCP-first connect
 // instructions. It does NOT spawn a process (see spec Follow-ups).
