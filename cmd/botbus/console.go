@@ -172,14 +172,14 @@ func (m model) updateOnboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.onboardState = onboardAskFocus
 			return m, nil
 		case onboardAskFocus:
-			url, err := m.onboard(m.onboardName, val)
+			inst, err := m.onboard(m.onboardName, val)
 			m.onboardState = onboardOff
 			if err != nil {
 				m.onboardMsg = "onboard failed: " + err.Error()
 				m.onboardName = ""
 				return m, nil
 			}
-			m.onboardMsg = "tell your agent to connect to " + url
+			m.onboardMsg = "tell your agent to connect to " + inst.ChannelURL
 			m.onboardName = ""
 			return m, nil
 		}
@@ -226,14 +226,15 @@ func readLine(r *bufio.Reader) (string, error) {
 	return strings.TrimRight(line, "\r\n"), nil
 }
 
-// onboardChildOps creates a child via the shared Ops core and returns the
-// operator-facing connect instruction (MCP-first, channel URL fallback).
-func onboardChildOps(ctx context.Context, ops daemon.Ops, name, focus string) (string, error) {
+// onboardChildOps creates a child via the shared Ops core and returns its
+// ConnectInstructions so callers can render connect text (localPastePrompt for
+// full paste blocks, or just inst.ChannelURL for compact TUI status lines).
+func onboardChildOps(ctx context.Context, ops daemon.Ops, name, focus string) (daemon.ConnectInstructions, error) {
 	_, inst, err := ops.CreateChild(ctx, name, focus)
 	if err != nil {
-		return "", err
+		return daemon.ConnectInstructions{}, err
 	}
-	return inst.MCPCommand + "\n(or raw: " + inst.ChannelURL + ")", nil
+	return inst, nil
 }
 
 // runConsole is the no-args entrypoint: load (or first-run create) the operator
@@ -349,7 +350,7 @@ func wireConsoleChat(parent context.Context, m *model, ops daemon.Ops) {
 			cancel = nil
 		}
 	}
-	m.onboard = func(name, focus string) (string, error) {
+	m.onboard = func(name, focus string) (daemon.ConnectInstructions, error) {
 		return onboardChildOps(context.Background(), ops, name, focus)
 	}
 	m.remove = func(node wire.AgentNode) (error, error) {

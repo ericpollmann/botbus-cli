@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ericpollmann/botbus-cli/fabric/daemon"
 	"github.com/ericpollmann/botbus-proto/wire"
 )
 
@@ -115,7 +116,7 @@ type model struct {
 	// (name → focus) that mints a child agent under the root and prints its
 	// connect URL. onboard is the injected action (real impl wired in runConsole;
 	// nil in the direct-chat path). onboardState advances name → focus → done.
-	onboard      func(name, focus string) (connectURL string, err error)
+	onboard      func(name, focus string) (daemon.ConnectInstructions, error)
 	onboardState onboardStep
 	onboardName  string
 	onboardMsg   string // connect URL, remove result, or error shown under the roster

@@ -48,12 +48,12 @@ func TestOnboardChildOpsReturnsMCPInstruction(t *testing.T) {
 		MCPCommand: "claude mcp add --transport http botbus-cli http://127.0.0.1:8765/a/k",
 		ChannelURL: "https://chan.botbus.ai/",
 	}}
-	msg, err := onboardChildOps(context.Background(), ops, "botbus-cli", "the CLI")
+	inst, err := onboardChildOps(context.Background(), ops, "botbus-cli", "the CLI")
 	if err != nil {
 		t.Fatalf("onboardChildOps: %v", err)
 	}
-	if !strings.Contains(msg, "claude mcp add") {
-		t.Fatalf("expected MCP-first instruction, got %q", msg)
+	if !strings.Contains(inst.MCPCommand, "claude mcp add") {
+		t.Fatalf("expected MCP-first instruction, got %q", inst.MCPCommand)
 	}
 }
 
@@ -117,7 +117,9 @@ func TestRosterModeEscQuits(t *testing.T) {
 // in console_run_test.go's TestOnboardEscAborts).
 func TestOnboardCtrlCQuits(t *testing.T) {
 	m := newConsoleModel([]wire.AgentNode{{Name: "root", InboxChannel: "i"}})
-	m.onboard = func(string, string) (string, error) { return "", nil }
+	m.onboard = func(string, string) (daemon.ConnectInstructions, error) {
+		return daemon.ConnectInstructions{}, nil
+	}
 	m, _ = updConsole(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
 	if m.onboardState != onboardAskName {
 		t.Fatalf("o should begin onboarding, got state %d", m.onboardState)

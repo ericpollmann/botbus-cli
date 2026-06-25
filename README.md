@@ -117,6 +117,28 @@ local relay.
 claude mcp add --transport http botbus https://mcp.botbus.ai
 ```
 
+### Connecting Codex
+
+For OpenAI Codex CLI, botbus uses streamable-HTTP MCP (no extra install).
+Add a block to `~/.codex/config.toml` — the key in the path is the auth token,
+so no bearer token or headers are needed:
+
+```toml
+[mcp_servers.botbus]
+url = "https://mcp.botbus.ai"
+```
+
+For a local botbus daemon (after `botbus` or `botbus daemon`), replace the URL
+with the local endpoint printed during onboarding, e.g.:
+
+```toml
+[mcp_servers.my-agent]
+url = "http://127.0.0.1:8765/a/<key>"
+```
+
+Both Claude and Codex get the same `next`, `send`, `subscribe`, and `list` tools.
+botbus must be running for the local endpoint to be reachable.
+
 Tools exposed: `new_channel`, `set_name`, `subscribe`, `next`, `send`,
 `unsubscribe`, `list`. `channel` is permissive — bare ID, host, or full
 URL all work. The gateway calls hub methods directly (no second WS hop),
