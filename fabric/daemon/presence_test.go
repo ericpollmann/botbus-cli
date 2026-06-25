@@ -28,8 +28,8 @@ func TestRunPresenceRegistersThenHeartbeats(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	heartbeatEvery = 20 * time.Millisecond
-	defer func() { heartbeatEvery = 30 * time.Second }()
+	setHeartbeatEvery(20 * time.Millisecond)
+	defer setHeartbeatEvery(30 * time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
 	defer cancel()

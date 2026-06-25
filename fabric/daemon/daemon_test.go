@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
@@ -20,21 +22,30 @@ func TestNewBuildsRuntimePerAgent(t *testing.T) {
 	}
 }
 
-func TestMuxMountsPerAgentEndpointAndRejectsUnknownKey(t *testing.T) {
+// TestMuxServesKnownKeyAnd404sUnknown verifies the catch-all mux dispatches to
+// a known key and returns 404 for an unknown one.
+func TestMuxServesKnownKeyAnd404sUnknown(t *testing.T) {
 	st := &agentstate.State{
 		Daemon: agentstate.Daemon{OutboundChannel: "out"},
 		Agents: []agentstate.Agent{{ID: "myth-compiler", Key: "key-xyz", InboxChannel: "inbox-c"}},
 	}
 	d := New(st, "", hubclient.NewFake())
-	mux := d.mux()
+	m := d.mux()
 
-	// The agent's MCP endpoint is routed at /a/<key>.
-	if _, pat := mux.Handler(httptest.NewRequest("GET", "/a/key-xyz", nil)); pat == "" {
-		t.Fatal("expected /a/key-xyz to be routed")
+	// Known key → routed to the MCP handler (non-404). The body "{}" is valid
+	// JSON but not a valid MCP JSON-RPC request, so the handler replies 400 —
+	// which still proves the route resolved (the assertion is "not 404").
+	rr := httptest.NewRecorder()
+	m.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/a/key-xyz", strings.NewReader("{}")))
+	if rr.Code == http.StatusNotFound {
+		t.Fatalf("known key returned 404, want non-404, got %d", rr.Code)
 	}
-	// An unknown key is not routed (ServeMux 404, empty pattern).
-	if _, pat := mux.Handler(httptest.NewRequest("GET", "/a/wrong", nil)); pat != "" {
-		t.Fatalf("unknown key should not match, got pattern %q", pat)
+
+	// Unknown key → 404.
+	rr2 := httptest.NewRecorder()
+	m.ServeHTTP(rr2, httptest.NewRequest(http.MethodPost, "/a/unknownkey", strings.NewReader("{}")))
+	if rr2.Code != http.StatusNotFound {
+		t.Fatalf("unknown key should return 404, got %d", rr2.Code)
 	}
 }
 

@@ -74,7 +74,9 @@ func splitComma(s string) []string {
 }
 
 // newAgentHandler returns a streamable-HTTP MCP handler exposing next/send for
-// one agent at the given endpoint path.
-func newAgentHandler(ag *agentMCP, path string) http.Handler {
-	return server.NewStreamableHTTPServer(buildMCPServer(ag), server.WithEndpointPath(path))
+// one agent. The path is pre-validated by the daemon's catch-all mux, and
+// StreamableHTTPServer.ServeHTTP dispatches purely by method (it ignores the
+// request path), so no endpoint-path option is needed here.
+func newAgentHandler(ag *agentMCP) http.Handler {
+	return server.NewStreamableHTTPServer(buildMCPServer(ag))
 }
