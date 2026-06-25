@@ -148,7 +148,7 @@ func onboardSteps(in io.Reader, out io.Writer, d hostagent.Deps, profilePath str
 
 	// Step 2: connect this session (local-MCP paste prompt + terminal fallback).
 	inst := rootConnect(ops.Addr(), root)
-	fmt.Fprintln(out, "\n── Connect THIS Claude Code session ──")
+	fmt.Fprintln(out, "\n── Connect THIS coding-agent session ──")
 	fmt.Fprintln(out, localPastePrompt(wsName, "workspace owner", inst))
 	fmt.Fprintf(out, "\n(terminal fallback: %s)\n", inst.MCPCommand)
 
@@ -186,11 +186,11 @@ func onboardSteps(in io.Reader, out io.Writer, d hostagent.Deps, profilePath str
 	agentName := ask(r, out, "\nAdd a standing agent/role (name, Enter to skip): ")
 	if agentName != "" {
 		focus := ask(r, out, "  Its focus: ")
-		msg, aerr := onboardChildOps(ctx, ops, agentName, focus)
+		childInst, aerr := onboardChildOps(ctx, ops, agentName, focus)
 		if aerr != nil {
 			fmt.Fprintln(out, "  (couldn't create agent:", aerr, ")")
 		} else {
-			fmt.Fprintf(out, "\nPaste into a NEW Claude Code session to run %s:\n%s\n", agentName, msg)
+			fmt.Fprintf(out, "\nConnect a new coding-agent session as %s:\n%s\n", agentName, localPastePrompt(agentName, focus, childInst))
 		}
 	}
 

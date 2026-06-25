@@ -79,7 +79,7 @@ func TestOnboardChildCreatesUnderRootAndSeedsWelcome(t *testing.T) {
 		Domain:    domain,
 	})
 
-	msg, err := onboardChildOps(context.Background(), opsWithProfile, "myth-compiler", "packages/compile")
+	inst, err := onboardChildOps(context.Background(), opsWithProfile, "myth-compiler", "packages/compile")
 	if err != nil {
 		t.Fatalf("onboardChildOps: %v", err)
 	}
@@ -115,13 +115,12 @@ func TestOnboardChildCreatesUnderRootAndSeedsWelcome(t *testing.T) {
 		t.Fatalf("welcome should embed operator framing/name: %q", published[0])
 	}
 
-	// The returned message must contain the MCP command.
-	if !strings.Contains(msg, "claude mcp add") {
-		t.Fatalf("onboardChildOps result should contain MCP command, got %q", msg)
+	// The returned instructions must carry the MCP command and channel URL.
+	if !strings.Contains(inst.MCPCommand, "claude mcp add") {
+		t.Fatalf("onboardChildOps MCPCommand should contain MCP command, got %q", inst.MCPCommand)
 	}
-	// The channel URL fallback must also be present.
-	if !strings.Contains(msg, child.InboxChannel) {
-		t.Fatalf("onboardChildOps result should contain inbox channel, got %q", msg)
+	if !strings.Contains(inst.ChannelURL, child.InboxChannel) {
+		t.Fatalf("onboardChildOps ChannelURL should contain inbox channel, got %q", inst.ChannelURL)
 	}
 }
 
@@ -140,9 +139,12 @@ func TestOnboardChildPropagatesCreateError(t *testing.T) {
 func TestOnboardInlineFlow(t *testing.T) {
 	var gotName, gotFocus string
 	m := newConsoleModel([]wire.AgentNode{{Name: "root", InboxChannel: "i-root"}})
-	m.onboard = func(name, focus string) (string, error) {
+	m.onboard = func(name, focus string) (daemon.ConnectInstructions, error) {
 		gotName, gotFocus = name, focus
-		return "https://child-inbox.botbus.ai", nil
+		return daemon.ConnectInstructions{
+			MCPEndpoint: "http://127.0.0.1:8765/a/childkey",
+			ChannelURL:  "https://child-inbox.botbus.ai",
+		}, nil
 	}
 
 	// Press `o` to begin onboarding.
@@ -167,18 +169,20 @@ func TestOnboardInlineFlow(t *testing.T) {
 	if gotName != "myth-cli" || gotFocus != "cli stuff" {
 		t.Fatalf("onboard called with (%q,%q)", gotName, gotFocus)
 	}
-	if !strings.Contains(m.onboardMsg, "child-inbox.botbus.ai") {
-		t.Fatalf("result message should carry connect URL, got %q", m.onboardMsg)
+	if !strings.Contains(m.onboardMsg, "127.0.0.1:8765/a/childkey") {
+		t.Fatalf("result message should carry the MCP endpoint, got %q", m.onboardMsg)
 	}
-	if !strings.Contains(m.View(), "child-inbox.botbus.ai") {
-		t.Fatal("roster view should render the connect URL result")
+	if !strings.Contains(m.View(), "127.0.0.1:8765/a/childkey") {
+		t.Fatal("roster view should render the MCP endpoint result")
 	}
 }
 
 // An empty name at the onboard name step shows an error and stays on the step.
 func TestOnboardEmptyNameStays(t *testing.T) {
 	m := newConsoleModel([]wire.AgentNode{{Name: "root", InboxChannel: "i"}})
-	m.onboard = func(string, string) (string, error) { return "", nil }
+	m.onboard = func(string, string) (daemon.ConnectInstructions, error) {
+		return daemon.ConnectInstructions{}, nil
+	}
 	m, _ = updConsole(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
 	m, _ = updConsole(m, tea.KeyMsg{Type: tea.KeyEnter}) // enter with empty name
 	if m.onboardState != onboardAskName {
@@ -192,7 +196,9 @@ func TestOnboardEmptyNameStays(t *testing.T) {
 // A failing onboard action surfaces the error and returns to the plain roster.
 func TestOnboardActionErrorSurfaces(t *testing.T) {
 	m := newConsoleModel([]wire.AgentNode{{Name: "root", InboxChannel: "i"}})
-	m.onboard = func(string, string) (string, error) { return "", fmt.Errorf("boom") }
+	m.onboard = func(string, string) (daemon.ConnectInstructions, error) {
+		return daemon.ConnectInstructions{}, fmt.Errorf("boom")
+	}
 	m, _ = updConsole(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
 	m = typeRunes(t, m, "child")
 	m, _ = updConsole(m, tea.KeyMsg{Type: tea.KeyEnter}) // name → focus
@@ -210,7 +216,9 @@ func TestOnboardActionErrorSurfaces(t *testing.T) {
 // input without advancing the onboard step.
 func TestOnboardForwardsNonKeyMessages(t *testing.T) {
 	m := newConsoleModel([]wire.AgentNode{{Name: "root", InboxChannel: "i"}})
-	m.onboard = func(string, string) (string, error) { return "", nil }
+	m.onboard = func(string, string) (daemon.ConnectInstructions, error) {
+		return daemon.ConnectInstructions{}, nil
+	}
 	m, _ = updConsole(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
 	m, _ = updConsole(m, tea.WindowSizeMsg{Width: 100, Height: 40})
 	if m.onboardState != onboardAskName {
@@ -230,7 +238,9 @@ func TestOnboardKeyInertWithoutHook(t *testing.T) {
 // esc during the onboard prompt aborts back to the plain roster (does NOT quit).
 func TestOnboardEscAborts(t *testing.T) {
 	m := newConsoleModel([]wire.AgentNode{{Name: "root", InboxChannel: "i"}})
-	m.onboard = func(string, string) (string, error) { return "", nil }
+	m.onboard = func(string, string) (daemon.ConnectInstructions, error) {
+		return daemon.ConnectInstructions{}, nil
+	}
 	m, _ = updConsole(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
 	m, cmd := updConsole(m, tea.KeyMsg{Type: tea.KeyEsc})
 	if m.onboardState != onboardOff {
