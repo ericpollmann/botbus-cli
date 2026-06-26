@@ -107,7 +107,7 @@ func (d *Daemon) attach(a agentstate.Agent) {
 	// correct outcome for a create-then-immediately-remove.
 	go runInbox(loopCtx, rt, d.hub, a.InboxChannel, a.Cursor, func(cur string) {
 		_ = agentstate.SetCursor(d.statePath, a.ID, cur)
-	})
+	}, d.openerFor(a.ID))
 	go runPresence(loopCtx, ctl, a)
 }
 

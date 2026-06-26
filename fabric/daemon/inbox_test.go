@@ -28,7 +28,7 @@ func TestRunInboxUnwrapsBatchAndAdvancesCursor(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runInbox(ctx, rt, fake, "inbox-compiler", "", persist)
+	go runInbox(ctx, rt, fake, "inbox-compiler", "", persist, func(e envelope.Envelope) (envelope.Envelope, bool) { return e, true })
 
 	// Let the subscription establish, then inject a router batch frame.
 	time.Sleep(30 * time.Millisecond)
