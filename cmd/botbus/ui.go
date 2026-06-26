@@ -22,7 +22,7 @@ import (
 const (
 	dotTTL       = 5 * time.Minute
 	spinSpeed    = 150 * time.Millisecond
-	quitHint     = "Esc quit · PgUp history · /me · /dm"
+	quitHint     = "Esc quit · PgUp history · /me · /dm · /compact"
 	maxInputRows = 8
 )
 
@@ -177,7 +177,7 @@ func newChatInput(myName string) textarea.Model {
 	promptWidth := lipgloss.Width(namePrompt)
 
 	ta := textarea.New()
-	ta.Placeholder = "type and Enter · shift+enter newline · /me · /dm name"
+	ta.Placeholder = "type and Enter · shift+enter newline · /me · /dm name · /compact"
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
 	ta.SetHeight(1)

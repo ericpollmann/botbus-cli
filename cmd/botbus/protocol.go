@@ -91,5 +91,8 @@ func renderSlash(name, body string, color int) (string, bool) {
 			return paletteStyle(color).Italic(true).Render(name + " → " + target + ": " + dmText), true
 		}
 	}
+	if body == "/compact" {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#525252")).Italic(true).Render("⟳ " + name + " requested /compact"), true
+	}
 	return "", false
 }
