@@ -39,14 +39,6 @@ func TestGetLenPrefixedBytesRoundTrip(t *testing.T) {
 	}
 }
 
-func TestOpenUnsupportedAlg(t *testing.T) {
-	var key [32]byte
-	env := Envelope{Ver: 1, Alg: 2, KeyEpoch: 0, Nonce: make([]byte, 12), CT: []byte("ct")}
-	if _, err := Open(key, nil, env); err == nil {
-		t.Fatal("expected error for unsupported alg=2")
-	}
-}
-
 func TestDecodeInnerTrailingBytes(t *testing.T) {
 	// Encode a valid inner then append extra bytes.
 	inner := encodeInner("dev", 1, []byte("plain"), []byte("sig"))

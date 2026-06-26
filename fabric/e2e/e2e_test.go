@@ -38,7 +38,6 @@ func randED25519(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 func TestEnvelopeMarshalParseRoundTrip(t *testing.T) {
 	env := e2e.Envelope{
 		Ver:      1,
-		Alg:      1,
 		KeyEpoch: 42,
 		Nonce:    []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12},
 		CT:       []byte("ciphertext"),
@@ -48,7 +47,7 @@ func TestEnvelopeMarshalParseRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if got.Ver != env.Ver || got.Alg != env.Alg || got.KeyEpoch != env.KeyEpoch {
+	if got.Ver != env.Ver || got.KeyEpoch != env.KeyEpoch {
 		t.Fatalf("header mismatch: %+v", got)
 	}
 	if !bytes.Equal(got.Nonce, env.Nonce) {
@@ -60,18 +59,17 @@ func TestEnvelopeMarshalParseRoundTrip(t *testing.T) {
 }
 
 func TestEnvelopeMarshalLayout(t *testing.T) {
-	// Verify exact byte layout: ver‖alg‖keyEpoch(4 LE)‖len(nonce)(1)‖nonce‖ct
+	// Verify exact byte layout: ver‖keyEpoch(4 LE)‖len(nonce)(1)‖nonce‖ct
 	env := e2e.Envelope{
 		Ver:      0x01,
-		Alg:      0x01,
 		KeyEpoch: 0x00000001, // LE: 01 00 00 00
 		Nonce:    []byte{0xAA, 0xBB},
 		CT:       []byte{0xCC, 0xDD},
 	}
 	b := env.Marshal()
-	// byte 0: Ver=1, byte 1: Alg=1, bytes 2-5: KeyEpoch LE, byte 6: nonce len=2
-	// bytes 7-8: nonce, bytes 9-10: ct
-	want := []byte{0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x02, 0xAA, 0xBB, 0xCC, 0xDD}
+	// byte 0: Ver=1, bytes 1-4: KeyEpoch LE, byte 5: nonce len=2,
+	// bytes 6-7: nonce, bytes 8-9: ct
+	want := []byte{0x01, 0x01, 0x00, 0x00, 0x00, 0x02, 0xAA, 0xBB, 0xCC, 0xDD}
 	if !bytes.Equal(b, want) {
 		t.Fatalf("layout: got % x, want % x", b, want)
 	}
@@ -81,9 +79,8 @@ func TestParseTruncatedInput(t *testing.T) {
 	cases := [][]byte{
 		{},
 		{1},
-		{1, 1},
-		{1, 1, 0, 0, 0, 0},          // missing nonce-len byte
-		{1, 1, 0, 0, 0, 0, 5, 1, 2}, // nonce len=5 but only 2 bytes
+		{1, 2, 3, 4, 5},          // 5 bytes: shorter than the 6-byte header
+		{1, 0, 0, 0, 0, 5, 1, 2}, // header says nonce len=5 but only 2 bytes follow
 	}
 	for _, c := range cases {
 		if _, err := e2e.Parse(c); err == nil {
@@ -110,11 +107,8 @@ func TestSealOpenRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
-	if env.Alg != 1 {
-		t.Fatalf("Alg: got %d, want 1", env.Alg)
-	}
-	if len(env.Nonce) != 12 {
-		t.Fatalf("nonce len: got %d, want 12", len(env.Nonce))
+	if len(env.Nonce) != 24 { // XChaCha20-Poly1305 NonceSizeX
+		t.Fatalf("nonce len: got %d, want 24", len(env.Nonce))
 	}
 
 	got, err := e2e.Open(key, aad, env)
@@ -153,7 +147,7 @@ func TestOpenWrongAAD(t *testing.T) {
 }
 
 // TestOpenBadNonceLengthNoPanic: a relay-controlled wrong-length nonce must
-// yield an error, never a panic (gcm.Open panics on a bad nonce length).
+// yield an error, never a panic (aead.Open panics on a bad nonce length).
 func TestOpenBadNonceLengthNoPanic(t *testing.T) {
 	key := randKey(t)
 	env, _ := e2e.Seal(key, 1, nil, []byte("x"))

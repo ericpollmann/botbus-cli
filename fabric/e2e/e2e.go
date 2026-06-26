@@ -1,26 +1,23 @@
 // Package e2e provides pure cryptographic primitives for botbus end-to-end
-// encryption. It has no I/O, no network, and no external dependencies —
-// stdlib only.
+// encryption. It has no I/O and no network. The only dependency is
+// golang.org/x/crypto (the Go-team-maintained extension) for XChaCha20-Poly1305.
 //
-// AEAD algorithm notes:
-//   - Alg=1: AES-256-GCM with a 12-byte (96-bit) random nonce.
-//     At-scale note: GCM nonce collision probability is ~2^(-32) at 2^32 seals
-//     with random nonces (birthday bound). For high-volume channels rotate the
-//     workspace key epoch well before reaching that bound.
-//   - Alg=2 (deferred): XChaCha20-Poly1305 with a 24-byte nonce. This is the
-//     spec's preferred AEAD (192-bit nonce eliminates the GCM volume concern)
-//     but requires golang.org/x/crypto, which is not in go.mod. The versioned
-//     Alg field in Envelope makes it a clean future addition; existing Alg=1
-//     ciphertexts remain openable.
+// AEAD: XChaCha20-Poly1305 with a 24-byte (192-bit) random nonce. The large
+// nonce is deliberate: a workspace key is shared across many devices that each
+// pick nonces independently with no coordination, so random-nonce collision
+// must be negligible at any realistic volume — which 192 bits gives (unlike a
+// 96-bit GCM nonce, whose ~2^-32-at-2^32-seals birthday bound + catastrophic
+// reuse failure make it a poor fit for the shared-key, uncoordinated-writer
+// model). The single Ver byte allows a future format change; there is
+// intentionally no multi-algorithm machinery.
 //
 // # Envelope binary layout
 //
 //	byte  0     : Ver (uint8)
-//	byte  1     : Alg (uint8)
-//	bytes 2–5   : KeyEpoch (uint32, little-endian)
-//	byte  6     : len(Nonce) (uint8)
-//	bytes 7…    : Nonce (len bytes)
-//	bytes 7+len…: CT (remainder; GCM appends its 16-byte auth tag to CT)
+//	bytes 1–4   : KeyEpoch (uint32, little-endian)
+//	byte  5     : len(Nonce) (uint8)
+//	bytes 6…    : Nonce (len bytes; 24 for XChaCha20-Poly1305)
+//	bytes 6+len…: CT (remainder; AEAD appends its 16-byte Poly1305 tag to CT)
 //
 // # SealMessage inner encoding
 //
@@ -60,8 +57,6 @@
 package e2e
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/rand"
@@ -69,6 +64,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+
+	"golang.org/x/crypto/chacha20poly1305"
 )
 
 // ── Envelope ─────────────────────────────────────────────────────────────────
@@ -76,10 +73,9 @@ import (
 // Envelope is a versioned, authenticated ciphertext envelope.
 type Envelope struct {
 	Ver      uint8
-	Alg      uint8
 	KeyEpoch uint32
 	Nonce    []byte
-	CT       []byte // for AES-256-GCM: ciphertext ‖ 16-byte GCM tag
+	CT       []byte // ciphertext ‖ 16-byte Poly1305 tag
 }
 
 // Marshal serialises the envelope to bytes. See package doc for layout.
@@ -87,83 +83,70 @@ func (e Envelope) Marshal() []byte {
 	nl := len(e.Nonce)
 	if nl > 255 {
 		// The length field is a single byte; a longer nonce would be silently
-		// truncated and mis-parsed. AEADs here use ≤24-byte nonces, so this is
-		// a programmer error.
+		// truncated and mis-parsed. The nonce is 24 bytes, so this is a
+		// programmer error.
 		panic("e2e: nonce too long to marshal (>255)")
 	}
-	buf := make([]byte, 7+nl+len(e.CT))
+	buf := make([]byte, 6+nl+len(e.CT))
 	buf[0] = e.Ver
-	buf[1] = e.Alg
-	binary.LittleEndian.PutUint32(buf[2:6], e.KeyEpoch)
-	buf[6] = uint8(nl)
-	copy(buf[7:], e.Nonce)
-	copy(buf[7+nl:], e.CT)
+	binary.LittleEndian.PutUint32(buf[1:5], e.KeyEpoch)
+	buf[5] = uint8(nl)
+	copy(buf[6:], e.Nonce)
+	copy(buf[6+nl:], e.CT)
 	return buf
 }
 
 // Parse deserialises an Envelope, rejecting malformed or truncated input.
 func Parse(b []byte) (Envelope, error) {
-	if len(b) < 7 {
+	if len(b) < 6 {
 		return Envelope{}, errors.New("e2e: envelope too short")
 	}
-	nl := int(b[6])
-	if len(b) < 7+nl {
-		return Envelope{}, fmt.Errorf("e2e: envelope nonce truncated (need %d, have %d)", nl, len(b)-7)
+	nl := int(b[5])
+	if len(b) < 6+nl {
+		return Envelope{}, fmt.Errorf("e2e: envelope nonce truncated (need %d, have %d)", nl, len(b)-6)
 	}
 	e := Envelope{
 		Ver:      b[0],
-		Alg:      b[1],
-		KeyEpoch: binary.LittleEndian.Uint32(b[2:6]),
+		KeyEpoch: binary.LittleEndian.Uint32(b[1:5]),
 		Nonce:    make([]byte, nl),
-		CT:       make([]byte, len(b)-7-nl),
+		CT:       make([]byte, len(b)-6-nl),
 	}
-	copy(e.Nonce, b[7:7+nl])
-	copy(e.CT, b[7+nl:])
+	copy(e.Nonce, b[6:6+nl])
+	copy(e.CT, b[6+nl:])
 	return e, nil
 }
 
 // ── AEAD ─────────────────────────────────────────────────────────────────────
 
-// Seal encrypts plaintext with AES-256-GCM (Alg=1) using a fresh 12-byte
-// random nonce. aad is passed as GCM additional authenticated data.
+// Seal encrypts plaintext with XChaCha20-Poly1305 using a fresh 24-byte random
+// nonce. aad is passed as additional authenticated data.
 func Seal(key [32]byte, keyEpoch uint32, aad, plaintext []byte) (Envelope, error) {
-	block, err := aes.NewCipher(key[:])
+	aead, err := chacha20poly1305.NewX(key[:])
 	if err != nil {
-		return Envelope{}, fmt.Errorf("e2e: AES init: %w", err)
+		return Envelope{}, fmt.Errorf("e2e: AEAD init: %w", err)
 	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return Envelope{}, fmt.Errorf("e2e: GCM init: %w", err)
-	}
-	nonce := make([]byte, gcm.NonceSize()) // 12 bytes
+	nonce := make([]byte, aead.NonceSize()) // 24 bytes (NonceSizeX)
 	if _, err := rand.Read(nonce); err != nil {
 		return Envelope{}, fmt.Errorf("e2e: nonce gen: %w", err)
 	}
-	ct := gcm.Seal(nil, nonce, plaintext, aad)
-	return Envelope{Ver: 1, Alg: 1, KeyEpoch: keyEpoch, Nonce: nonce, CT: ct}, nil
+	ct := aead.Seal(nil, nonce, plaintext, aad)
+	return Envelope{Ver: 1, KeyEpoch: keyEpoch, Nonce: nonce, CT: ct}, nil
 }
 
 // Open decrypts and authenticates an Envelope sealed with Seal.
 // Returns a clear error on authentication failure without leaking oracle info.
 func Open(key [32]byte, aad []byte, e Envelope) ([]byte, error) {
-	if e.Alg != 1 {
-		return nil, fmt.Errorf("e2e: unsupported alg %d", e.Alg)
-	}
-	block, err := aes.NewCipher(key[:])
+	aead, err := chacha20poly1305.NewX(key[:])
 	if err != nil {
-		return nil, fmt.Errorf("e2e: AES init: %w", err)
+		return nil, fmt.Errorf("e2e: AEAD init: %w", err)
 	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("e2e: GCM init: %w", err)
-	}
-	// The nonce comes off the wire (relay-controlled); gcm.Open PANICS on a
+	// The nonce comes off the wire (relay-controlled); aead.Open PANICS on a
 	// wrong-length nonce, so validate before calling it — else a crafted
 	// nonce-len byte is a remotely-triggerable crash.
-	if len(e.Nonce) != gcm.NonceSize() {
+	if len(e.Nonce) != aead.NonceSize() {
 		return nil, fmt.Errorf("e2e: invalid nonce length %d", len(e.Nonce))
 	}
-	plain, err := gcm.Open(nil, e.Nonce, e.CT, aad)
+	plain, err := aead.Open(nil, e.Nonce, e.CT, aad)
 	if err != nil {
 		return nil, errors.New("e2e: authentication failed")
 	}
