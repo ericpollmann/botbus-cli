@@ -46,12 +46,13 @@ type Agent struct {
 
 // Workspace holds e2e encryption config for an org-root.
 type Workspace struct {
-	RootID   string `json:"rootId"`
-	E2E      bool   `json:"e2e,omitempty"`
-	Epoch    uint32 `json:"epoch,omitempty"`
-	Key      []byte `json:"key,omitempty"`      // 32-byte symmetric workspace key
-	Salt     []byte `json:"salt,omitempty"`     // per-epoch HKDF salt (Phase 3 uses)
-	AdminPub []byte `json:"adminPub,omitempty"` // pinned admin Ed25519 pubkey
+	RootID    string `json:"rootId"`
+	E2E       bool   `json:"e2e,omitempty"`
+	Epoch     uint32 `json:"epoch,omitempty"`
+	Key       []byte `json:"key,omitempty"`       // 32-byte symmetric workspace key
+	Salt      []byte `json:"salt,omitempty"`      // per-epoch HKDF salt (Phase 3 uses)
+	AdminPub  []byte `json:"adminPub,omitempty"`  // pinned admin Ed25519 pubkey
+	AdminPriv []byte `json:"adminPriv,omitempty"` // admin Ed25519 private key (stored only on creator host)
 }
 
 // State is the full contents of the local state file.

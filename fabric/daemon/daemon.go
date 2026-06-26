@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/ed25519"
 	"net"
 	"net/http"
 	"strings"
@@ -78,6 +79,22 @@ func New(state *agentstate.State, statePath string, hub hubclient.HubClient) *Da
 	return NewRuntime(Config{State: state, StatePath: statePath, Hub: hub})
 }
 
+// seedDeviceFor registers the agent's ed25519 pubkey in the local device set
+// when the agent has a valid SignSeed and belongs to an e2e workspace. This
+// allows same-host sibling agents to verify each other's signatures without a
+// roster channel. Safe to call without holding d.mu (deviceSet.set is
+// internally locked; WorkspaceFor only reads state).
+func (d *Daemon) seedDeviceFor(a agentstate.Agent) {
+	if len(a.SignSeed) != ed25519.SeedSize {
+		return
+	}
+	ws, ok := d.state.WorkspaceFor(a.ID)
+	if !ok || !ws.E2E {
+		return
+	}
+	d.devices.set(a.ID, ed25519.NewKeyFromSeed(a.SignSeed).Public().(ed25519.PublicKey))
+}
+
 // attach wires an agent into the live daemon: ensures it has a runtime, is in
 // state, and—if the daemon is serving—has its inbox + presence loops running.
 // Idempotent (a second call for the same agent is a no-op for loops). Caller
@@ -98,6 +115,10 @@ func (d *Daemon) attach(a agentstate.Agent) {
 	rt := d.runtimes[a.ID]
 	ctl := d.ctl
 	d.mu.Unlock()
+
+	// Seed the local device set for e2e agents (outside mu hold; both calls are
+	// independently locked).
+	d.seedDeviceFor(a)
 
 	if !startLoops {
 		return

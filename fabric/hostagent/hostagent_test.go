@@ -2,6 +2,7 @@ package hostagent
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -383,6 +384,69 @@ func TestUpdateNilLeavesFieldEmptyClears(t *testing.T) {
 	persisted, _ := reloaded.Get("minted-a")
 	if persisted.Focus != "keep me" || persisted.Interest != "" {
 		t.Fatalf("nil/clear semantics not persisted: %+v", persisted)
+	}
+}
+
+// TestNewSignSeed verifies the helper returns a valid 32-byte ed25519 seed and
+// that successive calls return distinct values.
+func TestNewSignSeed(t *testing.T) {
+	seed, err := newSignSeed()
+	if err != nil {
+		t.Fatalf("newSignSeed: %v", err)
+	}
+	if len(seed) != ed25519.SeedSize {
+		t.Fatalf("seed length = %d, want %d", len(seed), ed25519.SeedSize)
+	}
+	// Must be usable as an ed25519 seed (panics if not).
+	_ = ed25519.NewKeyFromSeed(seed)
+
+	// Two calls must not return the same seed.
+	seed2, err := newSignSeed()
+	if err != nil {
+		t.Fatalf("newSignSeed (second): %v", err)
+	}
+	same := true
+	for i := range seed {
+		if seed[i] != seed2[i] {
+			same = false
+			break
+		}
+	}
+	if same {
+		t.Fatal("two successive seeds are identical — RNG not advancing")
+	}
+}
+
+// TestCreateE2EAgentGetsSignSeed verifies that Create with E2E:true yields an
+// agent with a valid 32-byte SignSeed, and E2E:false leaves SignSeed nil.
+func TestCreateE2EAgentGetsSignSeed(t *testing.T) {
+	ctx := context.Background()
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	deps := Deps{
+		Hub:       hubclient.NewFake(),
+		Control:   stubControl(t),
+		StatePath: statePath,
+		MintKey:   func() string { return "key-e2e" },
+	}
+
+	// E2E:true → SignSeed must be set to a valid 32-byte ed25519 seed.
+	a, err := Create(ctx, deps, CreateOpts{Name: "e2e-agent", E2E: true})
+	if err != nil {
+		t.Fatalf("Create (E2E): %v", err)
+	}
+	if len(a.SignSeed) != ed25519.SeedSize {
+		t.Fatalf("E2E agent SignSeed length = %d, want %d", len(a.SignSeed), ed25519.SeedSize)
+	}
+	// Must be a valid seed (NewKeyFromSeed panics if not).
+	_ = ed25519.NewKeyFromSeed(a.SignSeed)
+
+	// E2E:false → SignSeed must be nil.
+	a2, err := Create(ctx, deps, CreateOpts{Name: "plain-agent", E2E: false})
+	if err != nil {
+		t.Fatalf("Create (non-E2E): %v", err)
+	}
+	if a2.SignSeed != nil {
+		t.Fatalf("non-E2E agent SignSeed = %v, want nil", a2.SignSeed)
 	}
 }
 

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"crypto/ed25519"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -57,6 +58,55 @@ func TestAddrDefaults(t *testing.T) {
 	d2 := New(&agentstate.State{Daemon: agentstate.Daemon{MCPAddr: "127.0.0.1:9999"}}, "", hubclient.NewFake())
 	if d2.Addr() != "127.0.0.1:9999" {
 		t.Fatalf("Addr = %q, want override", d2.Addr())
+	}
+}
+
+// TestSeedDeviceForRegistersE2EAgent verifies that seedDeviceFor populates the
+// local device set for an agent with a valid SignSeed in an e2e workspace, and
+// is a no-op for plain (non-e2e) agents or agents with no SignSeed.
+func TestSeedDeviceForRegistersE2EAgent(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	seed := priv.Seed()
+	pub := priv.Public().(ed25519.PublicKey)
+
+	agentID := "e2e-agent-1"
+	rootID := "root-1"
+	st := &agentstate.State{
+		Agents: []agentstate.Agent{
+			{ID: rootID, Name: "ws-root", Key: "k0", InboxChannel: "i0"},
+			{ID: agentID, Name: "e2e-member", Key: "k1", InboxChannel: "i1",
+				Parent: rootID, SignSeed: seed},
+		},
+		Workspaces: []agentstate.Workspace{
+			{RootID: rootID, E2E: true, Epoch: 1},
+		},
+	}
+	d := NewRuntime(Config{State: st, Hub: hubclient.NewFake()})
+
+	// Seed device for the e2e agent.
+	e2eAgent, _ := st.Get(agentID)
+	d.seedDeviceFor(e2eAgent)
+
+	got, ok := d.devices.lookup(agentID)
+	if !ok {
+		t.Fatal("e2e agent pubkey not found in device set after seedDeviceFor")
+	}
+	if !got.Equal(pub) {
+		t.Fatalf("device pubkey mismatch: got %x, want %x", got, pub)
+	}
+
+	// Non-e2e agent (no SignSeed) must not be registered.
+	plainID := "plain-1"
+	st.Agents = append(st.Agents, agentstate.Agent{
+		ID: plainID, Name: "plain", Key: "k2", InboxChannel: "i2", Parent: rootID,
+	})
+	plain, _ := st.Get(plainID)
+	d.seedDeviceFor(plain)
+	if _, ok := d.devices.lookup(plainID); ok {
+		t.Fatal("non-e2e agent should not appear in device set")
 	}
 }
 
