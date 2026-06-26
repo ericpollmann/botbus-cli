@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
 	"github.com/ericpollmann/botbus-proto/envelope"
@@ -77,7 +76,6 @@ func TestTwoDaemonE2EConvergenceRelayBlind(t *testing.T) {
 	if _, ok := dC.openerFor("carol")(e); ok {
 		t.Fatal("a daemon with the wrong workspace key must not decrypt")
 	}
-	_ = time.Now
 }
 
 // TestTwoDaemonE2ETamperedCiphertextDropped seals a valid message as Alice,

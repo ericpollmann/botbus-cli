@@ -430,8 +430,10 @@ func TestWorkspaceRootIDCycleSafe(t *testing.T) {
 		{ID: "a", Parent: "b"},
 		{ID: "b", Parent: "a"},
 	}}
-	// must terminate (return "" on cycle), not loop forever
-	_ = s.WorkspaceRootID("a")
+	// must terminate (not loop forever) AND return "" on a cycle
+	if got := s.WorkspaceRootID("a"); got != "" {
+		t.Fatalf("cycle must yield empty root, got %q", got)
+	}
 }
 
 func TestWorkspaceForLooksUpKey(t *testing.T) {

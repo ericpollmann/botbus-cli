@@ -11,9 +11,9 @@ import (
 func TestE2EContextForNonE2EReturnsFalse(t *testing.T) {
 	st := &agentstate.State{Agents: []agentstate.Agent{{ID: "leaf", Parent: "root"}, {ID: "root"}}}
 	d := &Daemon{state: st}
-	_, ok, err := d.e2eContextFor("leaf")
-	if err != nil || ok {
-		t.Fatalf("non-e2e workspace must yield (nil,false,nil); got ok=%v err=%v", ok, err)
+	ctx, ok, err := d.e2eContextFor("leaf")
+	if err != nil || ok || ctx != nil {
+		t.Fatalf("non-e2e workspace must yield (nil,false,nil); got ctx=%v ok=%v err=%v", ctx, ok, err)
 	}
 }
 
