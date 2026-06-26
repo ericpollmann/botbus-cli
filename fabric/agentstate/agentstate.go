@@ -41,6 +41,17 @@ type Agent struct {
 	ModelTier    string        `json:"model_tier,omitempty"`
 	Cursor       string        `json:"cursor,omitempty"`
 	Filters      []filter.Rule `json:"filters,omitempty"`
+	SignSeed     []byte        `json:"signSeed,omitempty"` // 32-byte Ed25519 seed; deviceID == Agent.ID
+}
+
+// Workspace holds e2e encryption config for an org-root.
+type Workspace struct {
+	RootID   string `json:"rootId"`
+	E2E      bool   `json:"e2e,omitempty"`
+	Epoch    uint32 `json:"epoch,omitempty"`
+	Key      []byte `json:"key,omitempty"`      // 32-byte symmetric workspace key
+	Salt     []byte `json:"salt,omitempty"`     // per-epoch HKDF salt (Phase 3 uses)
+	AdminPub []byte `json:"adminPub,omitempty"` // pinned admin Ed25519 pubkey
 }
 
 // State is the full contents of the local state file.
@@ -49,8 +60,9 @@ type State struct {
 	// ActiveWorkspace is the org-root agent id of the operator's currently
 	// selected workspace. The console scopes its roster to this subtree; empty
 	// means "no active workspace — show everything".
-	ActiveWorkspace string  `json:"active_workspace,omitempty"`
-	Agents          []Agent `json:"agents"`
+	ActiveWorkspace string      `json:"active_workspace,omitempty"`
+	Agents          []Agent     `json:"agents"`
+	Workspaces      []Workspace `json:"workspaces,omitempty"`
 }
 
 // DefaultPath returns $BOTBUS_STATE if set, else ~/.botbus/state.json.
@@ -212,6 +224,51 @@ func (s *State) Remove(id string) bool {
 		}
 	}
 	return false
+}
+
+// AgentByID returns a pointer to the agent with the given id and whether it was found.
+func (s *State) AgentByID(id string) (*Agent, bool) {
+	for i := range s.Agents {
+		if s.Agents[i].ID == id {
+			return &s.Agents[i], true
+		}
+	}
+	return nil, false
+}
+
+// WorkspaceRootID walks Parent links to the org-root (Parent==""). It is
+// cycle-safe: it visits at most len(Agents) hops and returns "" on a cycle or
+// a dangling parent, mirroring the server-side registry.RootAncestorID.
+func (s *State) WorkspaceRootID(agentID string) string {
+	cur, ok := s.AgentByID(agentID)
+	if !ok {
+		return ""
+	}
+	for hops := 0; hops <= len(s.Agents); hops++ {
+		if cur.Parent == "" {
+			return cur.ID
+		}
+		next, ok := s.AgentByID(cur.Parent)
+		if !ok {
+			return "" // dangling parent
+		}
+		cur = next
+	}
+	return "" // cycle
+}
+
+// WorkspaceFor looks up the workspace for the given agent by walking to the root.
+func (s *State) WorkspaceFor(agentID string) (*Workspace, bool) {
+	root := s.WorkspaceRootID(agentID)
+	if root == "" {
+		return nil, false
+	}
+	for i := range s.Workspaces {
+		if s.Workspaces[i].RootID == root {
+			return &s.Workspaces[i], true
+		}
+	}
+	return nil, false
 }
 
 // SetCursor loads, updates the inbox resume cursor for one agent, and re-saves
