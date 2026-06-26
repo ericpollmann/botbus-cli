@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 )
@@ -95,6 +96,12 @@ func parseCanonicalDeviceSet(blob []byte) (signedDeviceSet, error) {
 		}
 		if err := json.Unmarshal(pair[1], &pub); err != nil {
 			return signedDeviceSet{}, err
+		}
+		if len(pub) != ed25519.PublicKeySize {
+			return signedDeviceSet{}, fmt.Errorf("e2e: device %q has invalid pubkey length %d", id, len(pub))
+		}
+		if _, exists := out.Devices[id]; exists {
+			return signedDeviceSet{}, fmt.Errorf("e2e: duplicate device id %q", id)
 		}
 		out.Devices[id] = pub
 	}
