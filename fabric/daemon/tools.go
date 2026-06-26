@@ -37,9 +37,16 @@ type SendArgs struct {
 	Body    string
 }
 
+// sealer encrypts content for an e2e workspace. channelID is provided for
+// Phase-3 per-topic-id seams; implementations may ignore it and capture the
+// channel from their closure. Returns base64-encoded ciphertext.
+type sealer func(channelID string, content []byte) (enc string, err error)
+
 // Send stamps id/ts/from onto an outbound envelope and publishes it to the
 // daemon's outbound source channel, where the router picks it up.
-func Send(ctx context.Context, hub hubclient.HubClient, outboundChannel, from string, a SendArgs) error {
+// When seal is non-nil, the envelope's Subject and Body are blanked and the
+// ciphertext is stored in Enc (e2e path). When seal is nil, plaintext is sent.
+func Send(ctx context.Context, hub hubclient.HubClient, outboundChannel, from string, a SendArgs, seal sealer) error {
 	kind := a.Kind
 	if kind == "" {
 		kind = envelope.KindChat
@@ -47,6 +54,15 @@ func Send(ctx context.Context, hub hubclient.HubClient, outboundChannel, from st
 	e := envelope.Envelope{
 		V: 1, ID: envelope.NewID(), TS: nowRFC3339(), From: from,
 		To: a.To, Kind: kind, Scope: a.Scope, Subject: a.Subject, Body: a.Body,
+	}
+	if seal != nil {
+		enc, err := seal("", encodeContent(a.Subject, a.Body))
+		if err != nil {
+			return err
+		}
+		e.Enc = enc
+		e.Subject = ""
+		e.Body = ""
 	}
 	raw, err := envelope.Encode(e)
 	if err != nil {

@@ -54,6 +54,8 @@ func (d *Daemon) e2eContextFor(agentID string) (*e2eCtx, bool, error) {
 // in-memory map on the Daemon; persistence across restarts is out of scope for
 // Phase 1 (documented limitation — replay window on the receiver side handles
 // restarts by being deliberately conservative).
+//
+// Caller must NOT hold d.mu.
 func (c *e2eCtx) nextCounter(d *Daemon) (uint64, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

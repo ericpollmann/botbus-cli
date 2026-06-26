@@ -2,10 +2,12 @@ package daemon
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
 	"github.com/ericpollmann/botbus-cli/fabric/console"
+	"github.com/ericpollmann/botbus-cli/fabric/e2e"
 	"github.com/ericpollmann/botbus-cli/fabric/hostagent"
 	"github.com/ericpollmann/botbus-proto/wire"
 )
@@ -88,8 +90,28 @@ func (d *Daemon) Roster(ctx context.Context) ([]wire.AgentNode, error) {
 // Send publishes a message as fromAgent to the daemon's outbound source channel
 // (the router routes it). args carries the full wire fields (body, to, kind,
 // subject, scope); kind defaults to chat when empty.
+// For e2e workspaces, content is sealed before publishing (Subject/Body blanked,
+// ciphertext stored in Enc).
 func (d *Daemon) Send(ctx context.Context, fromAgent string, args SendArgs) error {
-	return Send(ctx, d.hub, d.state.Daemon.OutboundChannel, fromAgent, args)
+	ec, isE2E, err := d.e2eContextFor(fromAgent)
+	if err != nil {
+		return err
+	}
+	var seal sealer
+	if isE2E {
+		seal = func(_ string, content []byte) (string, error) {
+			counter, err := ec.nextCounter(d)
+			if err != nil {
+				return "", err
+			}
+			env, err := e2e.SealMessage(ec.key, ec.epoch, ec.channelID, ec.deviceID, ec.devPriv, counter, content)
+			if err != nil {
+				return "", err
+			}
+			return base64.StdEncoding.EncodeToString(env.Marshal()), nil
+		}
+	}
+	return Send(ctx, d.hub, d.state.Daemon.OutboundChannel, fromAgent, args, seal)
 }
 
 // Remove deregisters + deletes a managed agent by id (the op behind the
