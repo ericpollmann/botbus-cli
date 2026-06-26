@@ -35,12 +35,15 @@ type Daemon struct {
 	mintKey func() string
 	domain  string
 
-	mu       sync.Mutex                    // guards state.Agents, runtimes, handlers, cancels, serving, runCtx, ctl
+	mu       sync.Mutex                    // guards state.Agents, runtimes, handlers, cancels, serving, runCtx, ctl, counters
 	handlers map[string]http.Handler       // capability key -> cached streamable MCP handler
 	cancels  map[string]context.CancelFunc // agentID -> loop canceller (set only while serving)
 	runCtx   context.Context               // parent ctx for attached agents' loops (set in RunOn)
 	ctl      *control.Client               // resolved control client (set in RunOn)
 	serving  bool                          // true while RunOn is active
+	devices  *deviceSet
+	replay   *replayWindow
+	counters map[string]uint64 // keyed by "deviceID|channelID|epoch"; lazy-init in nextCounter
 }
 
 // Config is the full set of runtime collaborators.
@@ -65,6 +68,8 @@ func NewRuntime(c Config) *Daemon {
 		control: c.Control, profile: c.Profile, mintKey: c.MintKey, domain: c.Domain,
 		handlers: make(map[string]http.Handler),
 		cancels:  make(map[string]context.CancelFunc),
+		devices:  newDeviceSet(),
+		replay:   newReplayWindow(),
 	}
 }
 
