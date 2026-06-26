@@ -15,26 +15,31 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// palette: 16 high-contrast hues. Indexed by nameColor(name).
+// palette: 32 high-contrast hues. Indexed by nameColor(name).
+// MUST match the PAL array in web/channel.html.
 var palette = []string{
 	"#f87171", "#fb923c", "#fbbf24", "#facc15",
 	"#a3e635", "#4ade80", "#34d399", "#2dd4bf",
 	"#22d3ee", "#38bdf8", "#60a5fa", "#a855f7",
 	"#e879f9", "#f43f5e", "#f472b6", "#fb7185",
+	"#ef4444", "#f97316", "#eab308", "#84cc16",
+	"#22c55e", "#14b8a6", "#06b6d4", "#3b82f6",
+	"#8b5cf6", "#ec4899", "#6366f1", "#10b981",
+	"#f59e0b", "#d946ef", "#0ea5e9", "#a16207",
 }
 
 func paletteStyle(i int) lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(palette[i&0x0F]))
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(palette[i&0x1F]))
 }
 
-// nameColor: sum of Unicode codepoints mod 16. Trivial, deterministic, and
+// nameColor: sum of Unicode codepoints mod 32. Trivial, deterministic, and
 // cheap to mirror in JS (channel.html has the identical algorithm).
 func nameColor(name string) int {
 	sum := 0
 	for _, r := range name {
 		sum += int(r)
 	}
-	return sum & 0x0F
+	return sum & 0x1F
 }
 
 // parseMsg splits "name: body" into (name, body, true). Bytes without that
