@@ -450,6 +450,37 @@ func TestCreateE2EAgentGetsSignSeed(t *testing.T) {
 	}
 }
 
+// TestCreateGeneratesEncKeyForE2E verifies that Create with E2E:true yields an
+// agent with a 32-byte EncPriv X25519 private key, and E2E:false leaves EncPriv nil.
+func TestCreateGeneratesEncKeyForE2E(t *testing.T) {
+	ctx := context.Background()
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	deps := Deps{
+		Hub:       hubclient.NewFake(),
+		Control:   stubControl(t),
+		StatePath: statePath,
+		MintKey:   func() string { return "key-enc" },
+	}
+
+	// E2E:true → EncPriv must be set to a 32-byte X25519 private key.
+	a, err := Create(ctx, deps, CreateOpts{Name: "enc-agent", E2E: true})
+	if err != nil {
+		t.Fatalf("Create (E2E): %v", err)
+	}
+	if len(a.EncPriv) != 32 {
+		t.Fatalf("E2E agent EncPriv length = %d, want 32", len(a.EncPriv))
+	}
+
+	// E2E:false → EncPriv must be nil.
+	a2, err := Create(ctx, deps, CreateOpts{Name: "plain-enc-agent", E2E: false})
+	if err != nil {
+		t.Fatalf("Create (non-E2E): %v", err)
+	}
+	if a2.EncPriv != nil {
+		t.Fatalf("non-E2E agent EncPriv = %v, want nil", a2.EncPriv)
+	}
+}
+
 // Updating an unknown name errors.
 func TestUpdateUnknownNameErrors(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")

@@ -49,14 +49,24 @@ func workspaceCreate(ctx context.Context, d hostagent.Deps, name string, e2e boo
 	if err != nil {
 		return agentstate.Agent{}, fmt.Errorf("load state: %w", err)
 	}
+	rosterChannel, err := d.Hub.MintChannel(ctx)
+	if err != nil {
+		return agentstate.Agent{}, fmt.Errorf("mint roster channel: %w", err)
+	}
+	waitingRoomChannel, err := d.Hub.MintChannel(ctx)
+	if err != nil {
+		return agentstate.Agent{}, fmt.Errorf("mint waiting room channel: %w", err)
+	}
 	s.Workspaces = append(s.Workspaces, agentstate.Workspace{
-		RootID:    root.ID,
-		E2E:       true,
-		Epoch:     1,
-		Key:       key[:],
-		Salt:      salt[:],
-		AdminPub:  []byte(adminPub),
-		AdminPriv: adminPrivKey.Seed(),
+		RootID:      root.ID,
+		E2E:         true,
+		Epoch:       1,
+		Key:         key[:],
+		Salt:        salt[:],
+		AdminPub:    []byte(adminPub),
+		AdminPriv:   adminPrivKey.Seed(),
+		Roster:      rosterChannel,
+		WaitingRoom: waitingRoomChannel,
 	})
 	if err := agentstate.Save(d.StatePath, s); err != nil {
 		return agentstate.Agent{}, fmt.Errorf("save workspace: %w", err)
@@ -190,7 +200,15 @@ func workspaceCmd(args []string) {
 			os.Exit(1)
 		}
 		if *e2eFlag {
-			fmt.Printf("created e2e workspace %q\n  root id: %s\n  channel: https://%s.%s\n", a.Name, a.ID, a.InboxChannel, domain)
+			s, _ := agentstate.Load(deps.StatePath)
+			var joinHandle string
+			for _, ws := range s.Workspaces {
+				if ws.RootID == a.ID {
+					joinHandle = ws.WaitingRoom
+					break
+				}
+			}
+			fmt.Printf("created e2e workspace %q\n  root id: %s\n  channel: https://%s.%s\n  join handle: %s\n", a.Name, a.ID, a.InboxChannel, domain, joinHandle)
 		} else {
 			fmt.Printf("created workspace %q\n  root id: %s\n  channel: https://%s.%s\n", a.Name, a.ID, a.InboxChannel, domain)
 		}

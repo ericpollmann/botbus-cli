@@ -202,17 +202,48 @@ relay.
 
 **Signing:** each e2e agent receives an ed25519 signing seed at creation time.
 On the same host, sibling agents can verify each other's signatures via a
-locally seeded device set (populated at daemon attach). Cross-host device
-distribution (admin-signed roster channel) is a follow-up.
+locally seeded trust graph (populated at daemon attach).
+
+### Cross-host admission (trust + key distribution)
+
+Multiple hosts can share one e2e workspace. Trust follows the agent hierarchy:
+
+- **Per-node admission, subtree trust.** The admin admits any *node* (a user,
+  a coordinator, or a single agent); trust flows to that node's whole subtree
+  via **parent-signs-child certificate chains**. A message is accepted only if
+  the sender's signing key resolves — directly, or through a valid cert chain —
+  to an **admitted anchor** (`trustGraph`). Admitting a coordinator brings in
+  exactly that subtree, not everything its user runs.
+- **Waiting room + SAS.** `workspace create --e2e` mints a waiting-room channel
+  (the shareable join handle) and a roster channel. A joiner posts its signing
+  + X25519 public keys; the admin verifies a short **SAS fingerprint** out of
+  band (social/timing), then admits.
+- **Sealed key distribution.** On admit, the admin adds the joiner to the
+  admin-signed anchor set and **wraps the workspace key** (NaCl sealed box) to
+  the joiner's X25519 key — the relay only ever sees ciphertext key material.
+- **Rotate-on-membership-change.** Admitting or removing rolls a new key-epoch,
+  re-wrapped to the current anchors only; a removed anchor never receives the
+  new epoch's key and its messages stop resolving to an anchor.
+
+Status: the cross-host **protocol** (cert chains, trust graph, admission codec,
+admit/join/rotate/remove methods, cert + anchor distribution over the roster
+channel) is implemented and covered by two-host convergence/relay-blind tests.
+The user-facing CLI subcommands (`workspace join`/`pending`/`admit`/`key
+rotate`/`remove`) and the runtime subscribe loops that auto-ingest roster/
+waiting-room frames are the remaining wiring on top of this protocol layer.
 
 **Known limitations (v1):**
 
-- **No forward secrecy.** The workspace key is static for an epoch; key
-  compromise exposes all messages in that epoch. Epoch rotation (periodic
-  rekeying) is planned but not yet implemented.
-- **No cryptographic revocation.** Removing a member from the workspace does
-  not prevent them from decrypting messages sent before removal. Mitigation:
-  epoch rotation with a fresh key issued only to current members.
+- **Forward secrecy is per-epoch, not per-message.** The workspace key is
+  static within an epoch; key compromise exposes all messages in that epoch.
+  Epoch rotation (`RotateKey`, and roll-on-removal) re-keys the group on
+  membership change, but there is no per-message ratcheting.
+- **Revocation is by rotation, not cryptographic.** Removing a member rolls a
+  new epoch key issued only to remaining anchors, so the removed member cannot
+  read *future* traffic; it does not retroactively protect messages sent before
+  removal. (Anchor enc-pubs for re-wrap are tracked in memory in v1 — anchors
+  admitted before a daemon restart won't receive post-restart rekeys until
+  re-admitted; persistence is a v2 item.)
 - **In-memory replay window and sender counters.** The daemon tracks a sliding
   replay window and per-sender counters in memory only. A daemon restart can
   transiently drop or over-accept messages around the restart boundary. This is

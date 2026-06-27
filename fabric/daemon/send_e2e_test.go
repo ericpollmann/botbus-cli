@@ -25,7 +25,7 @@ func TestSendE2EHidesContentFromRelay(t *testing.T) {
 		},
 		Workspaces: []agentstate.Workspace{{RootID: "root", E2E: true, Epoch: 1, Key: key}},
 	}
-	d := &Daemon{state: st, hub: fake, devices: newDeviceSet(), replay: newReplayWindow()}
+	d := &Daemon{state: st, hub: fake, trust: newTrustGraph(), replay: newReplayWindow()}
 
 	if err := d.Send(context.Background(), "alice", SendArgs{Subject: "secret subj", Body: "secret body"}); err != nil {
 		t.Fatal(err)
@@ -57,7 +57,7 @@ func TestSendNonE2EUnchanged(t *testing.T) {
 		Daemon: agentstate.Daemon{OutboundChannel: "out"},
 		Agents: []agentstate.Agent{{ID: "bob", Parent: ""}},
 	}
-	d := &Daemon{state: st, hub: fake, devices: newDeviceSet(), replay: newReplayWindow()}
+	d := &Daemon{state: st, hub: fake, trust: newTrustGraph(), replay: newReplayWindow()}
 	if err := d.Send(context.Background(), "bob", SendArgs{Subject: "s", Body: "b"}); err != nil {
 		t.Fatal(err)
 	}

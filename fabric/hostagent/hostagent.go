@@ -11,6 +11,8 @@ import (
 	"crypto/rand"
 	"fmt"
 
+	"golang.org/x/crypto/nacl/box"
+
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
 	"github.com/ericpollmann/botbus-cli/fabric/control"
 	"github.com/ericpollmann/botbus-proto/hubclient"
@@ -47,6 +49,16 @@ func newSignSeed() ([]byte, error) {
 		return nil, fmt.Errorf("generate sign seed: %w", err)
 	}
 	return priv.Seed(), nil
+}
+
+// newEncKey generates a fresh 32-byte X25519 private key for NaCl sealed-box
+// decryption. The returned slice is priv[:] — a copy of the array on the heap.
+func newEncKey() ([]byte, error) {
+	_, priv, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generate enc key: %w", err)
+	}
+	return priv[:], nil
 }
 
 // Batch defaults match the router's batcher defaults (see botbus router).
@@ -107,6 +119,10 @@ func Create(ctx context.Context, d Deps, o CreateOpts) (agentstate.Agent, error)
 			return agentstate.Agent{}, fmt.Errorf("generate sign seed: %w", err)
 		}
 		a.SignSeed = seed
+		a.EncPriv, err = newEncKey()
+		if err != nil {
+			return agentstate.Agent{}, fmt.Errorf("generate enc key: %w", err)
+		}
 	}
 
 	s.Upsert(a)

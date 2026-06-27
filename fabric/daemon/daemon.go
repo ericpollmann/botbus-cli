@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/ed25519"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
 	"github.com/ericpollmann/botbus-cli/fabric/control"
+	"github.com/ericpollmann/botbus-cli/fabric/e2e"
 	"github.com/ericpollmann/botbus-cli/fabric/profile"
 	"github.com/ericpollmann/botbus-proto/hubclient"
 	"golang.org/x/sync/errgroup"
@@ -36,15 +38,16 @@ type Daemon struct {
 	mintKey func() string
 	domain  string
 
-	mu       sync.Mutex                    // guards state.Agents, runtimes, handlers, cancels, serving, runCtx, ctl, counters
-	handlers map[string]http.Handler       // capability key -> cached streamable MCP handler
-	cancels  map[string]context.CancelFunc // agentID -> loop canceller (set only while serving)
-	runCtx   context.Context               // parent ctx for attached agents' loops (set in RunOn)
-	ctl      *control.Client               // resolved control client (set in RunOn)
-	serving  bool                          // true while RunOn is active
-	devices  *deviceSet
-	replay   *replayWindow
-	counters map[string]uint64 // keyed by "deviceID|channelID|epoch"; lazy-init in nextCounter
+	mu        sync.Mutex                    // guards state.Agents, runtimes, handlers, cancels, serving, runCtx, ctl, counters, anchorEnc
+	handlers  map[string]http.Handler       // capability key -> cached streamable MCP handler
+	cancels   map[string]context.CancelFunc // agentID -> loop canceller (set only while serving)
+	runCtx    context.Context               // parent ctx for attached agents' loops (set in RunOn)
+	ctl       *control.Client               // resolved control client (set in RunOn)
+	serving   bool                          // true while RunOn is active
+	trust     *trustGraph
+	replay    *replayWindow
+	counters  map[string]uint64 // keyed by "deviceID|channelID|epoch"; lazy-init in nextCounter
+	anchorEnc map[string][]byte // anchorID -> X25519 enc pubkey; in-memory only (not persisted across restarts)
 }
 
 // Config is the full set of runtime collaborators.
@@ -67,10 +70,11 @@ func NewRuntime(c Config) *Daemon {
 	return &Daemon{
 		state: c.State, statePath: c.StatePath, hub: c.Hub, runtimes: rts,
 		control: c.Control, profile: c.Profile, mintKey: c.MintKey, domain: c.Domain,
-		handlers: make(map[string]http.Handler),
-		cancels:  make(map[string]context.CancelFunc),
-		devices:  newDeviceSet(),
-		replay:   newReplayWindow(),
+		handlers:  make(map[string]http.Handler),
+		cancels:   make(map[string]context.CancelFunc),
+		trust:     newTrustGraph(),
+		replay:    newReplayWindow(),
+		anchorEnc: make(map[string][]byte),
 	}
 }
 
@@ -79,12 +83,13 @@ func New(state *agentstate.State, statePath string, hub hubclient.HubClient) *Da
 	return NewRuntime(Config{State: state, StatePath: statePath, Hub: hub})
 }
 
-// seedDeviceFor registers the agent's ed25519 pubkey in the local device set
-// when the agent has a valid SignSeed and belongs to an e2e workspace. This
-// allows same-host sibling agents to verify each other's signatures without a
-// roster channel. Safe to call without holding d.mu (deviceSet.set is
-// internally locked; WorkspaceFor only reads state).
-func (d *Daemon) seedDeviceFor(a agentstate.Agent) {
+// seedLocalTrust registers the agent's ed25519 pubkey in the local trust graph
+// when the agent has a valid SignSeed and belongs to an e2e workspace. Root
+// agents (no parent) are added as admitted anchors; child agents get a
+// parent-signed cert added to the graph so they resolve up the chain.
+// Safe to call without holding d.mu (trust graph and WorkspaceFor are
+// independently locked; state reads are read-only here).
+func (d *Daemon) seedLocalTrust(a agentstate.Agent) {
 	if len(a.SignSeed) != ed25519.SeedSize {
 		return
 	}
@@ -92,7 +97,19 @@ func (d *Daemon) seedDeviceFor(a agentstate.Agent) {
 	if !ok || !ws.E2E {
 		return
 	}
-	d.devices.set(a.ID, ed25519.NewKeyFromSeed(a.SignSeed).Public().(ed25519.PublicKey))
+	childPub := ed25519.NewKeyFromSeed(a.SignSeed).Public().(ed25519.PublicKey)
+	if a.Parent == "" || d.state.WorkspaceRootID(a.ID) == a.ID {
+		// Root agent — admit as an anchor.
+		d.trust.anchors.set(a.ID, childPub)
+		return
+	}
+	// Child agent — add a parent-signed cert so it resolves via the anchor chain.
+	parent, ok := d.state.AgentByID(a.Parent)
+	if !ok || len(parent.SignSeed) != ed25519.SeedSize {
+		return
+	}
+	parentPriv := ed25519.NewKeyFromSeed(parent.SignSeed)
+	d.trust.addCert(e2e.SignCert(parentPriv, a.ID, a.Parent, childPub))
 }
 
 // attach wires an agent into the live daemon: ensures it has a runtime, is in
@@ -116,9 +133,25 @@ func (d *Daemon) attach(a agentstate.Agent) {
 	ctl := d.ctl
 	d.mu.Unlock()
 
-	// Seed the local device set for e2e agents (outside mu hold; both calls are
+	// Seed the local trust graph for e2e agents (outside mu hold; both calls are
 	// independently locked).
-	d.seedDeviceFor(a)
+	d.seedLocalTrust(a)
+
+	// Publish this agent's cert to the roster channel so remote hosts learn it.
+	// Best-effort: only when hub + roster are configured and agent is a non-root
+	// e2e child with a parent signing seed.
+	if d.hub != nil && len(a.SignSeed) == ed25519.SeedSize && a.Parent != "" {
+		if ws, ok := d.state.WorkspaceFor(a.ID); ok && ws.E2E && ws.Roster != "" {
+			if parent, ok := d.state.AgentByID(a.Parent); ok && len(parent.SignSeed) == ed25519.SeedSize {
+				childPub := ed25519.NewKeyFromSeed(a.SignSeed).Public().(ed25519.PublicKey)
+				parentPriv := ed25519.NewKeyFromSeed(parent.SignSeed)
+				cert := e2e.SignCert(parentPriv, a.ID, a.Parent, childPub)
+				if err := d.publishCert(context.Background(), ws, cert); err != nil {
+					log.Printf("daemon: publishCert for %s: %v", a.ID, err)
+				}
+			}
+		}
+	}
 
 	if !startLoops {
 		return

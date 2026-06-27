@@ -102,3 +102,45 @@ func TestDeviceSetRejectsDuplicateDeviceID(t *testing.T) {
 		t.Fatal("expected error for duplicate device id, got nil")
 	}
 }
+
+// TestApplySignedRejectsStaleEpoch verifies that once an epoch-N blob is
+// accepted, a validly-signed blob at epoch M < N is rejected and the set
+// is left unchanged (epoch-N devices remain; epoch-M-only devices are absent).
+func TestApplySignedRejectsStaleEpoch(t *testing.T) {
+	adminPub, adminPriv, _ := ed25519.GenerateKey(rand.Reader)
+	dev2Pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	dev1Pub, _, _ := ed25519.GenerateKey(rand.Reader)
+
+	// Apply epoch-2 blob with dev-2 only.
+	blob2 := marshalDeviceSet(signedDeviceSet{
+		Epoch:   2,
+		Devices: map[string][]byte{"dev-2": dev2Pub},
+	})
+	sig2 := ed25519.Sign(adminPriv, blob2)
+
+	ds := newDeviceSet()
+	if err := ds.applySigned(blob2, sig2, adminPub); err != nil {
+		t.Fatalf("epoch-2 apply: %v", err)
+	}
+
+	// Now try to apply an epoch-1 blob with dev-1 — validly signed but stale.
+	blob1 := marshalDeviceSet(signedDeviceSet{
+		Epoch:   1,
+		Devices: map[string][]byte{"dev-1": dev1Pub},
+	})
+	sig1 := ed25519.Sign(adminPriv, blob1)
+
+	err := ds.applySigned(blob1, sig1, adminPub)
+	if err == nil {
+		t.Fatal("stale epoch-1 blob must be rejected after epoch-2 was applied")
+	}
+
+	// dev-2 (epoch-2) must still be present.
+	if got, ok := ds.lookup("dev-2"); !ok || !got.Equal(dev2Pub) {
+		t.Fatal("epoch-2 device must remain after stale replay rejection")
+	}
+	// dev-1 (epoch-1 only) must NOT have been admitted.
+	if _, ok := ds.lookup("dev-1"); ok {
+		t.Fatal("epoch-1-only device must not be present after stale replay rejection")
+	}
+}

@@ -20,7 +20,7 @@ type opener func(e envelope.Envelope) (envelope.Envelope, bool)
 
 // openerFor builds the opener function for the given receiving agent.
 // It captures the agent's e2e context once (no lock held in the closure itself);
-// the closure calls d.devices.lookup and d.replay.accept, both of which are
+// the closure calls d.trust.resolve and d.replay.accept, both of which are
 // internally locked.
 func (d *Daemon) openerFor(agentID string) opener {
 	ec, isE2E, err := d.e2eContextFor(agentID)
@@ -47,7 +47,7 @@ func (d *Daemon) openerFor(agentID string) opener {
 		if perr != nil {
 			return envelope.Envelope{}, false
 		}
-		dev, counter, content, oerr := e2e.OpenMessage(ec.key, ec.channelID, env, d.devices.lookup)
+		dev, counter, content, oerr := e2e.OpenMessage(ec.key, ec.channelID, env, d.trust.resolve)
 		if oerr != nil {
 			return envelope.Envelope{}, false
 		}

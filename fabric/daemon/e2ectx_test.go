@@ -49,7 +49,7 @@ func TestKeyArrayRejectsWrongLen(t *testing.T) {
 
 func TestNextCounterMonotonicFromOne(t *testing.T) {
 	st := &agentstate.State{Agents: []agentstate.Agent{{ID: "root", Parent: ""}, {ID: "leaf", Parent: "root"}}}
-	d := &Daemon{state: st, devices: newDeviceSet(), replay: newReplayWindow()}
+	d := &Daemon{state: st, trust: newTrustGraph(), replay: newReplayWindow()}
 
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	key := make([]byte, 32)

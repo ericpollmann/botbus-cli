@@ -326,6 +326,35 @@ func TestWorkspaceInviteE2EMemberGetsSignSeed(t *testing.T) {
 	}
 }
 
+// workspaceCreate --e2e must populate Workspace.WaitingRoom with a minted channel id.
+func TestWorkspaceCreateE2EPopulatesWaitingRoom(t *testing.T) {
+	deps := fakeDeps(t)
+	root, err := workspaceCreate(context.Background(), deps, "secure", true)
+	if err != nil {
+		t.Fatalf("workspaceCreate(e2e): %v", err)
+	}
+	s, err := agentstate.Load(deps.StatePath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	var ws *agentstate.Workspace
+	for i := range s.Workspaces {
+		if s.Workspaces[i].RootID == root.ID {
+			ws = &s.Workspaces[i]
+			break
+		}
+	}
+	if ws == nil {
+		t.Fatal("no workspace record found")
+	}
+	if ws.WaitingRoom == "" {
+		t.Fatal("WaitingRoom must be minted (non-empty)")
+	}
+	if ws.WaitingRoom == ws.Roster {
+		t.Fatal("WaitingRoom and Roster must be different channels")
+	}
+}
+
 // parseInviteArgs must accept the --workspace flag in ANY position relative to
 // the positional user. The bug this guards: `invite ethan --workspace x` left
 // --workspace unparsed (flag.Parse stops at the first positional), so the

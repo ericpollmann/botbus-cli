@@ -67,12 +67,36 @@ func (d *deviceSet) applySigned(blob, sig []byte, adminPub ed25519.PublicKey) er
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	// Reject strictly-stale epochs to prevent replay of older admin-signed blobs.
+	if parsed.Epoch < d.epoch {
+		return fmt.Errorf("e2e: device set epoch %d is older than current epoch %d", parsed.Epoch, d.epoch)
+	}
 	d.epoch = parsed.Epoch
 	d.pubs = make(map[string]ed25519.PublicKey, len(parsed.Devices))
 	for id, pub := range parsed.Devices {
 		d.pubs[id] = ed25519.PublicKey(pub)
 	}
 	return nil
+}
+
+// remove drops id from the set under Lock. No-op if id is absent.
+func (d *deviceSet) remove(id string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.pubs, id)
+}
+
+// snapshot returns a copy of the current id→pubBytes map under RLock.
+func (d *deviceSet) snapshot() map[string][]byte {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	out := make(map[string][]byte, len(d.pubs))
+	for id, pub := range d.pubs {
+		cp := make([]byte, len(pub))
+		copy(cp, pub)
+		out[id] = cp
+	}
+	return out
 }
 
 // parseCanonicalDeviceSet reverses marshalDeviceSet (devices = [[id, pubBytes], ...]).

@@ -42,17 +42,20 @@ type Agent struct {
 	Cursor       string        `json:"cursor,omitempty"`
 	Filters      []filter.Rule `json:"filters,omitempty"`
 	SignSeed     []byte        `json:"signSeed,omitempty"` // 32-byte Ed25519 seed; deviceID == Agent.ID
+	EncPriv      []byte        `json:"encPriv,omitempty"`  // 32-byte X25519 private key (e2e agents only)
 }
 
 // Workspace holds e2e encryption config for an org-root.
 type Workspace struct {
-	RootID    string `json:"rootId"`
-	E2E       bool   `json:"e2e,omitempty"`
-	Epoch     uint32 `json:"epoch,omitempty"`
-	Key       []byte `json:"key,omitempty"`       // 32-byte symmetric workspace key
-	Salt      []byte `json:"salt,omitempty"`      // per-epoch HKDF salt (Phase 3 uses)
-	AdminPub  []byte `json:"adminPub,omitempty"`  // pinned admin Ed25519 pubkey
-	AdminPriv []byte `json:"adminPriv,omitempty"` // admin Ed25519 private key (stored only on creator host)
+	RootID      string `json:"rootId"`
+	E2E         bool   `json:"e2e,omitempty"`
+	Epoch       uint32 `json:"epoch,omitempty"`
+	Key         []byte `json:"key,omitempty"`         // 32-byte symmetric workspace key
+	Salt        []byte `json:"salt,omitempty"`        // per-epoch HKDF salt (Phase 3 uses)
+	AdminPub    []byte `json:"adminPub,omitempty"`    // pinned admin Ed25519 pubkey
+	AdminPriv   []byte `json:"adminPriv,omitempty"`   // admin Ed25519 private key (stored only on creator host)
+	Roster      string `json:"roster,omitempty"`      // per-workspace roster channel id for cert distribution
+	WaitingRoom string `json:"waitingRoom,omitempty"` // channel where join requests arrive before admission
 }
 
 // State is the full contents of the local state file.
