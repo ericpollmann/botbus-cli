@@ -75,6 +75,13 @@ func (d *deviceSet) applySigned(blob, sig []byte, adminPub ed25519.PublicKey) er
 	return nil
 }
 
+// remove drops id from the set under Lock. No-op if id is absent.
+func (d *deviceSet) remove(id string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.pubs, id)
+}
+
 // snapshot returns a copy of the current id→pubBytes map under RLock.
 func (d *deviceSet) snapshot() map[string][]byte {
 	d.mu.RLock()

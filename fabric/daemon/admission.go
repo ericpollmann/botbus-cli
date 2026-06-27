@@ -97,6 +97,19 @@ func (d *Daemon) AdmitJoinRequest(ctx context.Context, ws *agentstate.Workspace,
 		return AdmitGrant{}, err
 	}
 
+	// Record the joiner's enc pubkey for future key rotation re-wraps.
+	// In-memory only: not persisted across restarts (see anchorEnc field comment).
+	if len(req.EncPub) == 32 {
+		d.mu.Lock()
+		if d.anchorEnc == nil {
+			d.anchorEnc = make(map[string][]byte)
+		}
+		enc := make([]byte, 32)
+		copy(enc, req.EncPub)
+		d.anchorEnc[req.ReqID] = enc
+		d.mu.Unlock()
+	}
+
 	// Publish anchor update to roster.
 	key, err := keyArray(ws.Key)
 	if err != nil {
