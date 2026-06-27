@@ -38,15 +38,16 @@ type Daemon struct {
 	mintKey func() string
 	domain  string
 
-	mu       sync.Mutex                    // guards state.Agents, runtimes, handlers, cancels, serving, runCtx, ctl, counters
-	handlers map[string]http.Handler       // capability key -> cached streamable MCP handler
-	cancels  map[string]context.CancelFunc // agentID -> loop canceller (set only while serving)
-	runCtx   context.Context               // parent ctx for attached agents' loops (set in RunOn)
-	ctl      *control.Client               // resolved control client (set in RunOn)
-	serving  bool                          // true while RunOn is active
-	trust    *trustGraph
-	replay   *replayWindow
-	counters map[string]uint64 // keyed by "deviceID|channelID|epoch"; lazy-init in nextCounter
+	mu            sync.Mutex                    // guards state.Agents, runtimes, handlers, cancels, rosterCancels, serving, runCtx, ctl, counters
+	handlers      map[string]http.Handler       // capability key -> cached streamable MCP handler
+	cancels       map[string]context.CancelFunc // agentID -> loop canceller (set only while serving)
+	rosterCancels map[string]context.CancelFunc // ws.RootID -> roster-loop canceller (set only while serving)
+	runCtx        context.Context               // parent ctx for attached agents' loops (set in RunOn)
+	ctl           *control.Client               // resolved control client (set in RunOn)
+	serving       bool                          // true while RunOn is active
+	trust         *trustGraph
+	replay        *replayWindow
+	counters      map[string]uint64 // keyed by "deviceID|channelID|epoch"; lazy-init in nextCounter
 }
 
 // Config is the full set of runtime collaborators.
@@ -69,10 +70,11 @@ func NewRuntime(c Config) *Daemon {
 	return &Daemon{
 		state: c.State, statePath: c.StatePath, hub: c.Hub, runtimes: rts,
 		control: c.Control, profile: c.Profile, mintKey: c.MintKey, domain: c.Domain,
-		handlers: make(map[string]http.Handler),
-		cancels:  make(map[string]context.CancelFunc),
-		trust:    newTrustGraph(),
-		replay:   newReplayWindow(),
+		handlers:      make(map[string]http.Handler),
+		cancels:       make(map[string]context.CancelFunc),
+		rosterCancels: make(map[string]context.CancelFunc),
+		trust:         newTrustGraph(),
+		replay:        newReplayWindow(),
 	}
 }
 
@@ -313,6 +315,24 @@ func (d *Daemon) RunOn(ctx context.Context, ln net.Listener) error {
 	d.mu.Unlock()
 	for _, a := range initial {
 		d.attach(a)
+	}
+	// Start one runRoster per e2e workspace, deduped by ws.RootID.
+	for i := range d.state.Workspaces {
+		ws := &d.state.Workspaces[i] // take address of slice element, never loop-var copy
+		if !ws.E2E || ws.Roster == "" {
+			continue
+		}
+		d.mu.Lock()
+		_, already := d.rosterCancels[ws.RootID]
+		if !already {
+			rCtx, rCancel := context.WithCancel(gctx)
+			d.rosterCancels[ws.RootID] = rCancel
+			d.mu.Unlock()
+			d.hydrateWorkspaceTrust(ws)
+			go runRoster(rCtx, d, ws)
+		} else {
+			d.mu.Unlock()
+		}
 	}
 	srv := &http.Server{Handler: d.mux()}
 	g.Go(func() error {
