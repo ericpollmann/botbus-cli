@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/ed25519"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -133,6 +134,22 @@ func (d *Daemon) attach(a agentstate.Agent) {
 	// Seed the local trust graph for e2e agents (outside mu hold; both calls are
 	// independently locked).
 	d.seedLocalTrust(a)
+
+	// Publish this agent's cert to the roster channel so remote hosts learn it.
+	// Best-effort: only when hub + roster are configured and agent is a non-root
+	// e2e child with a parent signing seed.
+	if d.hub != nil && len(a.SignSeed) == ed25519.SeedSize && a.Parent != "" {
+		if ws, ok := d.state.WorkspaceFor(a.ID); ok && ws.E2E && ws.Roster != "" {
+			if parent, ok := d.state.AgentByID(a.Parent); ok && len(parent.SignSeed) == ed25519.SeedSize {
+				childPub := ed25519.NewKeyFromSeed(a.SignSeed).Public().(ed25519.PublicKey)
+				parentPriv := ed25519.NewKeyFromSeed(parent.SignSeed)
+				cert := e2e.SignCert(parentPriv, a.ID, a.Parent, childPub)
+				if err := d.publishCert(context.Background(), ws, cert); err != nil {
+					log.Printf("daemon: publishCert for %s: %v", a.ID, err)
+				}
+			}
+		}
+	}
 
 	if !startLoops {
 		return

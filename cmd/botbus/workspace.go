@@ -49,6 +49,10 @@ func workspaceCreate(ctx context.Context, d hostagent.Deps, name string, e2e boo
 	if err != nil {
 		return agentstate.Agent{}, fmt.Errorf("load state: %w", err)
 	}
+	rosterChannel, err := d.Hub.MintChannel(ctx)
+	if err != nil {
+		return agentstate.Agent{}, fmt.Errorf("mint roster channel: %w", err)
+	}
 	s.Workspaces = append(s.Workspaces, agentstate.Workspace{
 		RootID:    root.ID,
 		E2E:       true,
@@ -57,6 +61,7 @@ func workspaceCreate(ctx context.Context, d hostagent.Deps, name string, e2e boo
 		Salt:      salt[:],
 		AdminPub:  []byte(adminPub),
 		AdminPriv: adminPrivKey.Seed(),
+		Roster:    rosterChannel,
 	})
 	if err := agentstate.Save(d.StatePath, s); err != nil {
 		return agentstate.Agent{}, fmt.Errorf("save workspace: %w", err)

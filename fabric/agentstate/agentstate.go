@@ -54,6 +54,7 @@ type Workspace struct {
 	Salt      []byte `json:"salt,omitempty"`      // per-epoch HKDF salt (Phase 3 uses)
 	AdminPub  []byte `json:"adminPub,omitempty"`  // pinned admin Ed25519 pubkey
 	AdminPriv []byte `json:"adminPriv,omitempty"` // admin Ed25519 private key (stored only on creator host)
+	Roster    string `json:"roster,omitempty"`    // per-workspace roster channel id for cert distribution
 }
 
 // State is the full contents of the local state file.
