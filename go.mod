@@ -7,7 +7,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/coder/websocket v1.8.13
-	github.com/ericpollmann/botbus-proto v0.3.0
+	github.com/ericpollmann/botbus-proto v0.4.0
 	github.com/mark3labs/mcp-go v0.54.0
 	golang.org/x/crypto v0.53.0
 	golang.org/x/sync v0.21.0
@@ -41,5 +41,3 @@ require (
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 )
-
-replace github.com/ericpollmann/botbus-proto => /Users/pollmann/Documents/hack/botbus-proto/.claude/worktrees/enc-field
