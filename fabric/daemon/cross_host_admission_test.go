@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
@@ -95,9 +96,13 @@ func TestCrossHostJoinAdmitConverge(t *testing.T) {
 	if len(parsedGrant.WrappedKey) == 0 {
 		t.Fatal("WrappedKey must be non-empty in published grant")
 	}
-	// The raw wire frame must not contain the plaintext workspace key.
+	// The raw wire frame must not contain the plaintext workspace key — neither
+	// as raw bytes nor as the base64 form JSON would actually emit for a []byte.
 	if bytes.Contains([]byte(grantRaw), wsKey[:]) {
-		t.Fatal("relay-blind violation: plaintext workspace key found in grant frame")
+		t.Fatal("relay-blind violation: plaintext workspace key (raw) found in grant frame")
+	}
+	if strings.Contains(grantRaw, base64.StdEncoding.EncodeToString(wsKey[:])) {
+		t.Fatal("relay-blind violation: base64 workspace key found in grant frame")
 	}
 
 	// --- Joiner processes grant ---
@@ -172,18 +177,27 @@ func TestCrossHostJoinAdmitConverge(t *testing.T) {
 	if err := json.Unmarshal(rosterFrame.AnchorBlob, &anchorSet); err != nil {
 		t.Fatalf("unmarshal anchorBlob: %v", err)
 	}
-	found := false
+	foundJoiner, foundAdmin := false, false
 	for _, pair := range anchorSet.Devices {
 		if len(pair) != 2 {
 			continue
 		}
 		var id string
-		if err := json.Unmarshal(pair[0], &id); err == nil && id == "joiner-1" {
-			found = true
+		if err := json.Unmarshal(pair[0], &id); err == nil {
+			switch id {
+			case "joiner-1":
+				foundJoiner = true
+			case "admin-root":
+				foundAdmin = true
+			}
 		}
 	}
-	if !found {
+	if !foundJoiner {
 		t.Fatal("anchor blob must include joiner-1")
+	}
+	// Admitting the joiner must NOT wipe the prior anchor (admin-root).
+	if !foundAdmin {
+		t.Fatal("anchor blob must still include the prior anchor admin-root after admit")
 	}
 	// Verify admin signature on the anchor blob.
 	if !ed25519.Verify(adminPub, rosterFrame.AnchorBlob, rosterFrame.AnchorSig) {
