@@ -37,20 +37,19 @@ func (g *trustGraph) applyAnchorSet(blob, sig []byte, adminPub ed25519.PublicKey
 // resolve returns the signing public key for id if it can be traced to an
 // admitted anchor through a valid cert chain.
 //
-// Lock strategy: take g.mu.RLock once at the top and snapshot the certs map
-// into a local reference. anchors.lookup takes the deviceSet's own mutex, so
-// there is no lock-ordering issue.
+// Lock strategy: hold g.mu.RLock for the entire walk so that a concurrent
+// addCert cannot mutate g.certs while resolveLocked reads it. anchors.lookup
+// takes the deviceSet's own mutex — no lock-ordering hazard since nothing
+// acquires g.mu while holding the deviceSet mutex.
 func (g *trustGraph) resolve(id string) (ed25519.PublicKey, bool) {
 	g.mu.RLock()
-	certs := g.certs // snapshot the map reference under RLock; the lock (not immutability) excludes concurrent addCert during this read pass
-	g.mu.RUnlock()
-
-	visited := make(map[string]bool, len(certs)+1)
-	return resolveChain(id, certs, g.anchors, visited)
+	defer g.mu.RUnlock()
+	return g.resolveLocked(id, map[string]bool{})
 }
 
-// resolveChain is the recursive helper. visited guards against cycles.
-func resolveChain(id string, certs map[string]e2e.Cert, anchors *deviceSet, visited map[string]bool) (ed25519.PublicKey, bool) {
+// resolveLocked is the recursive helper; caller must hold g.mu.RLock.
+// visited guards against cycles.
+func (g *trustGraph) resolveLocked(id string, visited map[string]bool) (ed25519.PublicKey, bool) {
 	// Cycle / depth guard.
 	if visited[id] {
 		return nil, false
@@ -58,18 +57,18 @@ func resolveChain(id string, certs map[string]e2e.Cert, anchors *deviceSet, visi
 	visited[id] = true
 
 	// 1. Admitted anchor → done.
-	if pub, ok := anchors.lookup(id); ok {
+	if pub, ok := g.anchors.lookup(id); ok {
 		return pub, true
 	}
 
 	// 2. Must have a cert.
-	c, ok := certs[id]
+	c, ok := g.certs[id]
 	if !ok {
 		return nil, false
 	}
 
 	// 3. Recursively resolve the parent.
-	parentPub, ok := resolveChain(c.ParentID, certs, anchors, visited)
+	parentPub, ok := g.resolveLocked(c.ParentID, visited)
 	if !ok {
 		return nil, false
 	}

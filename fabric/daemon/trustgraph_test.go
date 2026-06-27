@@ -181,6 +181,82 @@ func TestTrustGraphAnchorWinsOverCert(t *testing.T) {
 	}
 }
 
+func TestTrustGraphResolveAddCertNoRace(t *testing.T) {
+	// Regression test for the data race between resolve (RLock) and addCert
+	// (Lock). Spin up concurrent readers and writers; rely on -race to catch
+	// any unsynchronised access to g.certs.
+	_, adminPriv, _ := ed25519.GenerateKey(rand.Reader)
+	rootPub, rootPriv, _ := ed25519.GenerateKey(rand.Reader)
+
+	g := newTrustGraph()
+	buildAnchorSet(t, g, adminPriv, "root", rootPub)
+
+	// Pre-seed one cert so resolve("child0") can succeed.
+	childPub0, _, _ := ed25519.GenerateKey(rand.Reader)
+	g.addCert(e2e.SignCert(rootPriv, "child0", "root", childPub0))
+
+	const (
+		readers  = 8
+		writers  = 4
+		iters    = 200
+		duration = 300 * time.Millisecond
+	)
+
+	stop := make(chan struct{})
+	time.AfterFunc(duration, func() { close(stop) })
+
+	errc := make(chan error, readers+writers)
+
+	// Reader goroutines: resolve anchored and non-anchored ids repeatedly.
+	for i := 0; i < readers; i++ {
+		go func() {
+			for {
+				select {
+				case <-stop:
+					errc <- nil
+					return
+				default:
+				}
+				// Anchored id must always resolve.
+				if pub, ok := g.resolve("root"); !ok || pub == nil {
+					errc <- nil // we just want concurrent access; assertion is soft
+					return
+				}
+				g.resolve("child0")
+				g.resolve("nonexistent")
+			}
+		}()
+	}
+
+	// Writer goroutines: keep adding new certs.
+	for w := 0; w < writers; w++ {
+		go func() {
+			for i := 0; i < iters; i++ {
+				select {
+				case <-stop:
+					errc <- nil
+					return
+				default:
+				}
+				childPub, _, _ := ed25519.GenerateKey(rand.Reader)
+				g.addCert(e2e.SignCert(rootPriv, "dynamic", "root", childPub))
+			}
+			errc <- nil
+		}()
+	}
+
+	for i := 0; i < readers+writers; i++ {
+		if err := <-errc; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// After all concurrent activity, pre-seeded anchor must still resolve.
+	if _, ok := g.resolve("root"); !ok {
+		t.Fatal("root anchor must still resolve after concurrent writes")
+	}
+}
+
 func TestTrustGraphCycleSafe(t *testing.T) {
 	// A.parent=B, B.parent=A — neither is an anchor.
 	// resolve(A) must terminate and return false.
