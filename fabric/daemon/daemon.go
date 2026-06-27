@@ -38,10 +38,11 @@ type Daemon struct {
 	mintKey func() string
 	domain  string
 
-	mu            sync.Mutex                    // guards state.Agents, runtimes, handlers, cancels, rosterCancels, serving, runCtx, ctl, counters
+	mu            sync.Mutex                    // guards state.Agents, runtimes, handlers, cancels, rosterCancels, wroomCancels, serving, runCtx, ctl, counters
 	handlers      map[string]http.Handler       // capability key -> cached streamable MCP handler
 	cancels       map[string]context.CancelFunc // agentID -> loop canceller (set only while serving)
 	rosterCancels map[string]context.CancelFunc // ws.RootID -> roster-loop canceller (set only while serving)
+	wroomCancels  map[string]context.CancelFunc // ws.RootID -> waiting-room-loop canceller (set only while serving; admin hosts only)
 	runCtx        context.Context               // parent ctx for attached agents' loops (set in RunOn)
 	ctl           *control.Client               // resolved control client (set in RunOn)
 	serving       bool                          // true while RunOn is active
@@ -73,6 +74,7 @@ func NewRuntime(c Config) *Daemon {
 		handlers:      make(map[string]http.Handler),
 		cancels:       make(map[string]context.CancelFunc),
 		rosterCancels: make(map[string]context.CancelFunc),
+		wroomCancels:  make(map[string]context.CancelFunc),
 		trust:         newTrustGraph(),
 		replay:        newReplayWindow(),
 	}
@@ -316,7 +318,8 @@ func (d *Daemon) RunOn(ctx context.Context, ln net.Listener) error {
 	for _, a := range initial {
 		d.attach(a)
 	}
-	// Start one runRoster per e2e workspace, deduped by ws.RootID.
+	// Start one runRoster (and, for admin hosts, one runWaitingRoom) per e2e workspace,
+	// deduped by ws.RootID.
 	for i := range d.state.Workspaces {
 		ws := &d.state.Workspaces[i] // take address of slice element, never loop-var copy
 		if !ws.E2E || ws.Roster == "" {
@@ -332,6 +335,19 @@ func (d *Daemon) RunOn(ctx context.Context, ln net.Listener) error {
 			go runRoster(rCtx, d, ws)
 		} else {
 			d.mu.Unlock()
+		}
+		// Admin hosts only: subscribe to the waiting room to record pending join requests.
+		if len(ws.AdminPriv) > 0 && ws.WaitingRoom != "" {
+			d.mu.Lock()
+			_, wrAlready := d.wroomCancels[ws.RootID]
+			if !wrAlready {
+				wrCtx, wrCancel := context.WithCancel(gctx)
+				d.wroomCancels[ws.RootID] = wrCancel
+				d.mu.Unlock()
+				go runWaitingRoom(wrCtx, d, ws)
+			} else {
+				d.mu.Unlock()
+			}
 		}
 	}
 	srv := &http.Server{Handler: d.mux()}

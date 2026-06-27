@@ -54,6 +54,17 @@ type AnchorRef struct {
 	EncPub  []byte `json:"encPub"`
 }
 
+// PendingJoin is a persisted copy of an inbound JoinRequest that has arrived
+// on the waiting-room channel but has not yet been admitted by the admin.
+// Kept in agentstate to avoid an import cycle with the daemon package.
+type PendingJoin struct {
+	ReqID        string `json:"reqId"`
+	Name         string `json:"name"`
+	ParentIntent string `json:"parentIntent,omitempty"`
+	SignPub      []byte `json:"signPub"`
+	EncPub       []byte `json:"encPub"`
+}
+
 // Workspace holds e2e encryption config for an org-root.
 type Workspace struct {
 	RootID      string `json:"rootId"`
@@ -64,8 +75,9 @@ type Workspace struct {
 	AdminPub    []byte `json:"adminPub,omitempty"`    // pinned admin Ed25519 pubkey
 	AdminPriv   []byte `json:"adminPriv,omitempty"`   // admin Ed25519 private key (stored only on creator host)
 	Roster      string `json:"roster,omitempty"`      // per-workspace roster channel id for cert distribution
-	WaitingRoom string      `json:"waitingRoom,omitempty"` // channel where join requests arrive before admission
-	Anchors     []AnchorRef `json:"anchors,omitempty"`     // admitted remote anchors (admin host); source of truth for rekey re-wraps
+	WaitingRoom string        `json:"waitingRoom,omitempty"` // channel where join requests arrive before admission
+	Anchors     []AnchorRef   `json:"anchors,omitempty"`     // admitted remote anchors (admin host); source of truth for rekey re-wraps
+	Pending     []PendingJoin `json:"pending,omitempty"`     // inbound join requests not yet admitted (admin host only)
 }
 
 // State is the full contents of the local state file.
