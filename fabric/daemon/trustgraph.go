@@ -42,7 +42,7 @@ func (g *trustGraph) applyAnchorSet(blob, sig []byte, adminPub ed25519.PublicKey
 // there is no lock-ordering issue.
 func (g *trustGraph) resolve(id string) (ed25519.PublicKey, bool) {
 	g.mu.RLock()
-	certs := g.certs // local reference; map entries are immutable once stored
+	certs := g.certs // snapshot the map reference under RLock; the lock (not immutability) excludes concurrent addCert during this read pass
 	g.mu.RUnlock()
 
 	visited := make(map[string]bool, len(certs)+1)

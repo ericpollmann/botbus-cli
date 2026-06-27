@@ -132,6 +132,55 @@ func TestTrustGraphRejectsTamperedChildPub(t *testing.T) {
 	}
 }
 
+func TestTrustGraphRejectsSelfSignedCert(t *testing.T) {
+	// A cert where ChildID == ParentID == "X", self-signed by X's own key.
+	// X is NOT in the anchor set, so resolve must return (nil, false).
+	xPub, xPriv, _ := ed25519.GenerateKey(rand.Reader)
+
+	g := newTrustGraph()
+	// No anchor set — "X" is deliberately NOT admitted.
+	g.addCert(e2e.SignCert(xPriv, "X", "X", xPub))
+
+	_, ok := g.resolve("X")
+	if ok {
+		t.Fatal("self-signed cert with no anchor admission must not resolve")
+	}
+}
+
+func TestTrustGraphAnchorWinsOverCert(t *testing.T) {
+	// Admit both "A" (with aPub) and "evil" (with evilPub) into a single
+	// anchor set so neither call overwrites the other.
+	// Then addCert a forged cert for ChildID "A" that claims evilPub.
+	// resolve("A") must return aPub (the admin-signed anchor key), not evilPub.
+	_, adminPriv, _ := ed25519.GenerateKey(rand.Reader)
+	aPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	evilPub, evilPriv, _ := ed25519.GenerateKey(rand.Reader)
+
+	adminPub := adminPriv.Public().(ed25519.PublicKey)
+	g := newTrustGraph()
+
+	// Single applySigned with both devices so "A" is not evicted.
+	blob := marshalDeviceSet(signedDeviceSet{
+		Epoch:   1,
+		Devices: map[string][]byte{"A": aPub, "evil": evilPub},
+	})
+	sig := ed25519.Sign(adminPriv, blob)
+	if err := g.applyAnchorSet(blob, sig, adminPub); err != nil {
+		t.Fatalf("applyAnchorSet: %v", err)
+	}
+
+	// Forged cert: "evil" claims to have signed a cert for "A" carrying evilPub.
+	g.addCert(e2e.SignCert(evilPriv, "A", "evil", evilPub))
+
+	got, ok := g.resolve("A")
+	if !ok {
+		t.Fatal("admitted anchor must resolve")
+	}
+	if !got.Equal(aPub) {
+		t.Fatal("anchor pubkey must win over a conflicting cert claiming a different pubkey")
+	}
+}
+
 func TestTrustGraphCycleSafe(t *testing.T) {
 	// A.parent=B, B.parent=A — neither is an anchor.
 	// resolve(A) must terminate and return false.
