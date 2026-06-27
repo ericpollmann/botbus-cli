@@ -1,10 +1,13 @@
 package daemon
 
 import (
+	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 
+	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/nacl/box"
 )
@@ -75,6 +78,89 @@ func unwrapKey(blob []byte, encPriv [32]byte) ([32]byte, bool) {
 	var key [32]byte
 	copy(key[:], plain)
 	return key, true
+}
+
+// AdmitJoinRequest admits req into the workspace: it expands the anchor set,
+// publishes the new admin-signed anchor blob to the roster channel, wraps the
+// workspace key for the joiner, and delivers the AdmitGrant to the waiting room.
+func (d *Daemon) AdmitJoinRequest(ctx context.Context, ws *agentstate.Workspace, req JoinRequest) (AdmitGrant, error) {
+	// 1. Build new anchor set = current anchors + joiner.
+	devices := d.trust.anchors.snapshot()
+	devices[req.ReqID] = req.SignPub
+
+	blob := marshalDeviceSet(signedDeviceSet{Epoch: ws.Epoch, Devices: devices})
+	adminPriv := ed25519.NewKeyFromSeed(ws.AdminPriv)
+	sig := ed25519.Sign(adminPriv, blob)
+
+	// Apply locally.
+	if err := d.trust.applyAnchorSet(blob, sig, ed25519.PublicKey(ws.AdminPub)); err != nil {
+		return AdmitGrant{}, err
+	}
+
+	// Publish anchor update to roster.
+	key, err := keyArray(ws.Key)
+	if err != nil {
+		return AdmitGrant{}, err
+	}
+	sealed, err := sealRosterFrame(key, ws.Epoch, rosterFrame{Kind: "anchors", AnchorBlob: blob, AnchorSig: sig})
+	if err != nil {
+		return AdmitGrant{}, err
+	}
+	if err := d.hub.Publish(ctx, ws.Roster, sealed); err != nil {
+		return AdmitGrant{}, err
+	}
+
+	// 2. Wrap workspace key to the joiner's enc public key.
+	var encPub [32]byte
+	copy(encPub[:], req.EncPub)
+	wrapped, err := wrapKey(key, encPub)
+	if err != nil {
+		return AdmitGrant{}, err
+	}
+
+	// 3. Build and publish the grant.
+	grant := AdmitGrant{
+		ReqID:       req.ReqID,
+		AnchorID:    req.ReqID,
+		RootID:      ws.RootID,
+		Epoch:       ws.Epoch,
+		WrappedKey:  wrapped,
+		AdminPub:    ws.AdminPub,
+		Roster:      ws.Roster,
+		WaitingRoom: ws.WaitingRoom,
+	}
+	grantBytes, err := grant.Marshal()
+	if err != nil {
+		return AdmitGrant{}, err
+	}
+	if err := d.hub.Publish(ctx, ws.WaitingRoom, string(grantBytes)); err != nil {
+		return AdmitGrant{}, err
+	}
+	return grant, nil
+}
+
+// ProcessAdmitGrant unwraps the workspace key from the grant and returns a
+// populated Workspace. Returns (nil, [32]byte{}, false) on any failure.
+func ProcessAdmitGrant(grant AdmitGrant, encPriv []byte) (*agentstate.Workspace, [32]byte, bool) {
+	if len(encPriv) != 32 {
+		return nil, [32]byte{}, false
+	}
+	var priv [32]byte
+	copy(priv[:], encPriv)
+	key, ok := unwrapKey(grant.WrappedKey, priv)
+	if !ok {
+		return nil, [32]byte{}, false
+	}
+	ws := &agentstate.Workspace{
+		RootID:      grant.RootID,
+		E2E:         true,
+		Epoch:       grant.Epoch,
+		Key:         key[:],
+		AdminPub:    grant.AdminPub,
+		Roster:      grant.Roster,
+		WaitingRoom: grant.WaitingRoom,
+	}
+	return ws, key, true
 }
 
 // sasFingerprint returns a short human-comparable string derived from

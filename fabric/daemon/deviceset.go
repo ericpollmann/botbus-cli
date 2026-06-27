@@ -75,6 +75,19 @@ func (d *deviceSet) applySigned(blob, sig []byte, adminPub ed25519.PublicKey) er
 	return nil
 }
 
+// snapshot returns a copy of the current id→pubBytes map under RLock.
+func (d *deviceSet) snapshot() map[string][]byte {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	out := make(map[string][]byte, len(d.pubs))
+	for id, pub := range d.pubs {
+		cp := make([]byte, len(pub))
+		copy(cp, pub)
+		out[id] = cp
+	}
+	return out
+}
+
 // parseCanonicalDeviceSet reverses marshalDeviceSet (devices = [[id, pubBytes], ...]).
 func parseCanonicalDeviceSet(blob []byte) (signedDeviceSet, error) {
 	var raw struct {
