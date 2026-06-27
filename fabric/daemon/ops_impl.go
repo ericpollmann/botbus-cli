@@ -9,6 +9,7 @@ import (
 	"github.com/ericpollmann/botbus-cli/fabric/console"
 	"github.com/ericpollmann/botbus-cli/fabric/e2e"
 	"github.com/ericpollmann/botbus-cli/fabric/hostagent"
+	"github.com/ericpollmann/botbus-proto/envelope"
 	"github.com/ericpollmann/botbus-proto/wire"
 )
 
@@ -66,10 +67,30 @@ func (d *Daemon) CreateChild(ctx context.Context, name, focus string) (agentstat
 		return agentstate.Agent{}, ConnectInstructions{}, fmt.Errorf("create child: %w", err)
 	}
 	welcome := console.RenderWelcome(child.Name, focus, "root", d.profile)
-	if err := console.SeedWelcome(ctx, d.hub, child.InboxChannel, welcome); err != nil {
-		return agentstate.Agent{}, ConnectInstructions{}, fmt.Errorf("seed welcome: %w", err)
+	// Look up workspace via the parent (child is not yet in d.state.Agents at
+	// this point — attach adds it below). The parent is the root whose workspace
+	// record holds the e2e flag.
+	ws, isE2E := d.state.WorkspaceFor(child.Parent)
+	isE2EWorkspace := isE2E && ws.E2E
+	if !isE2EWorkspace {
+		// Non-e2e: publish the welcome via the hub (normal path).
+		if err := console.SeedWelcome(ctx, d.hub, child.InboxChannel, welcome); err != nil {
+			return agentstate.Agent{}, ConnectInstructions{}, fmt.Errorf("seed welcome: %w", err)
+		}
 	}
 	d.attach(child)
+	if isE2EWorkspace {
+		// E2E: welcome is injected directly into the child's local runtime so it
+		// never traverses the relay (which would produce an unencrypted frame that
+		// the fail-closed opener would drop).
+		d.injectLocal(child.ID, envelope.Envelope{
+			V:    1,
+			ID:   envelope.NewID(),
+			From: "botbus",
+			Kind: envelope.KindChat,
+			Body: welcome,
+		})
+	}
 	endpoint := fmt.Sprintf("http://%s/a/%s", d.Addr(), child.Key)
 	return child, ConnectInstructions{
 		MCPCommand:  fmt.Sprintf("claude mcp add --transport http %s %s", child.Name, endpoint),
@@ -135,4 +156,19 @@ func (d *Daemon) ReadInbox(ctx context.Context, agentID string, timeoutSec int) 
 		return "", fmt.Errorf("unknown agent id %q", agentID)
 	}
 	return Next(ctx, rt, timeoutSec), nil
+}
+
+// injectLocal enqueues e directly onto the named agent's runtime queue,
+// bypassing the hub. Used to deliver the connect welcome for e2e workspaces
+// so it never traverses the relay as cleartext. Safe to call without holding
+// d.mu: we take mu only to read the runtime pointer, then release before
+// calling enqueue (which acquires its own lock).
+func (d *Daemon) injectLocal(agentID string, e envelope.Envelope) {
+	d.mu.Lock()
+	rt := d.runtimes[agentID]
+	d.mu.Unlock()
+	if rt == nil {
+		return
+	}
+	rt.enqueue(e)
 }

@@ -144,14 +144,11 @@ func TestTwoDaemonE2ETamperedCiphertextDropped(t *testing.T) {
 	}
 }
 
-// TestE2EAgentDropsCleartextIsAcceptedAsPassthroughToday documents CURRENT
-// Phase-1 behavior: an e2e-configured agent's opener currently passes cleartext
-// frames through (Enc=="") rather than rejecting them.
-//
-// NOTE: current Phase-1 behavior tolerates cleartext frames for e2e agents.
-// A hardening decision (drop cleartext / fail-closed) is pending; if that lands,
-// flip this test's expectation.
-func TestE2EAgentDropsCleartextIsAcceptedAsPassthroughToday(t *testing.T) {
+// TestE2EAgentDropsCleartextFrame asserts the fail-closed decision: an
+// e2e-configured agent's opener DROPS all unencrypted inbound frames (Enc=="").
+// A compromised relay cannot inject unauthenticated cleartext to an e2e agent.
+// The connect welcome is delivered locally and never traverses the relay.
+func TestE2EAgentDropsCleartextFrame(t *testing.T) {
 	var key [32]byte
 	rand.Read(key[:])
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
@@ -174,12 +171,9 @@ func TestE2EAgentDropsCleartextIsAcceptedAsPassthroughToday(t *testing.T) {
 		Body: "hello in the clear",
 	}
 
-	got, ok := dB.openerFor("bob")(cleartext)
-	// Current behavior: cleartext is passed through (ok == true).
-	if !ok {
-		t.Fatal("Phase-1: cleartext frame must pass through for e2e agents (passthrough behavior)")
-	}
-	if got.Body != "hello in the clear" {
-		t.Fatalf("passthrough body mismatch: %q", got.Body)
+	_, ok := dB.openerFor("bob")(cleartext)
+	// Fail-closed: cleartext frames must be dropped for e2e agents.
+	if ok {
+		t.Fatal("e2e agent must drop cleartext frames (fail-closed)")
 	}
 }

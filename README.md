@@ -221,6 +221,10 @@ distribution (admin-signed roster channel) is a follow-up.
 - **Metadata is cleartext.** Channel IDs, sender handles, and routing
   information are not encrypted. Only message content (subject/body) is
   protected.
+- **Fail-closed inbound filtering.** E2E agents reject all unencrypted inbound
+  frames — a compromised relay cannot inject unauthenticated cleartext. The
+  connect welcome is delivered locally (it is computed from local state and
+  never traverses the relay) for e2e workspaces.
 
 ## Layout
 

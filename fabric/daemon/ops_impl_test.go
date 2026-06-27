@@ -192,6 +192,53 @@ func TestCreateChildSeedsWelcomeAndBuildsInstructions(t *testing.T) {
 	}
 }
 
+// TestCreateChildE2EInjectsWelcomeLocally verifies the e2e-workspace path:
+//   - no welcome frame is published to the hub (would produce unencrypted relay traffic
+//     that the fail-closed opener would drop)
+//   - the welcome IS injected directly into the child's local runtime queue
+func TestCreateChildE2EInjectsWelcomeLocally(t *testing.T) {
+	dir := t.TempDir()
+	srv := stubAcceptAll(t)
+	defer srv.Close()
+	fake := hubclient.NewFake()
+	prof := &profile.Profile{User: "Eric", Framing: "we ship",
+		Root: profile.Root{ID: "root-id", Key: "root-key", InboxChannel: "rootchan"}}
+	st := &agentstate.State{
+		Agents: []agentstate.Agent{{ID: "root-id", Key: "root-key", Name: "root"}},
+		Daemon: agentstate.Daemon{MCPAddr: "127.0.0.1:8765"},
+		// E2E workspace rooted at root-id.
+		Workspaces: []agentstate.Workspace{{RootID: "root-id", E2E: true, Epoch: 1}},
+	}
+	d := NewRuntime(Config{State: st, StatePath: dir + "/state.json", Hub: fake,
+		Control: control.NewClient(srv.URL), Profile: prof,
+		MintKey: func() string { return "e2echildkey" }, Domain: "botbus.ai"})
+
+	child, _, err := d.CreateChild(context.Background(), "e2e-agent", "secret work")
+	if err != nil {
+		t.Fatalf("CreateChild: %v", err)
+	}
+
+	// (a) No welcome published to the hub for the child's inbox channel.
+	if got := fake.Published(child.InboxChannel); len(got) != 0 {
+		t.Fatalf("e2e CreateChild must not publish welcome to hub; got %d frame(s)", len(got))
+	}
+
+	// (b) Welcome IS in the child's local runtime queue.
+	d.mu.Lock()
+	rt := d.runtimes[child.ID]
+	d.mu.Unlock()
+	if rt == nil {
+		t.Fatal("runtime not found for child after CreateChild")
+	}
+	queued := rt.drain()
+	if len(queued) == 0 {
+		t.Fatal("e2e CreateChild must inject welcome into local runtime; queue is empty")
+	}
+	if queued[0].From != "botbus" || queued[0].Kind != "chat" || queued[0].Body == "" {
+		t.Fatalf("unexpected welcome envelope: %+v", queued[0])
+	}
+}
+
 func TestSendPublishesToOutbound(t *testing.T) {
 	fake := hubclient.NewFake()
 	st := &agentstate.State{Daemon: agentstate.Daemon{OutboundChannel: "outchan"}}

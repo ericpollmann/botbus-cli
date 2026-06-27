@@ -35,8 +35,9 @@ func (d *Daemon) openerFor(agentID string) opener {
 	}
 	return func(e envelope.Envelope) (envelope.Envelope, bool) {
 		if e.Enc == "" {
-			// Tolerate cleartext control frames if any.
-			return e, true
+			// E2E agents are fail-closed: drop all unencrypted inbound frames.
+			// The connect welcome is delivered locally (never traverses the relay).
+			return envelope.Envelope{}, false
 		}
 		raw, derr := base64.StdEncoding.DecodeString(e.Enc)
 		if derr != nil {
