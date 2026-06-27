@@ -407,3 +407,42 @@ func TestSaveOverUnparseableExistingAllowed(t *testing.T) {
 		t.Fatalf("backup should preserve the prior bytes verbatim, got %q", raw)
 	}
 }
+
+func TestWorkspaceRootIDWalksParents(t *testing.T) {
+	s := &State{Agents: []Agent{
+		{ID: "root", Parent: ""},
+		{ID: "mid", Parent: "root"},
+		{ID: "leaf", Parent: "mid"},
+	}}
+	if got := s.WorkspaceRootID("leaf"); got != "root" {
+		t.Fatalf("got %q want root", got)
+	}
+	if got := s.WorkspaceRootID("root"); got != "root" {
+		t.Fatalf("self-root: got %q", got)
+	}
+	if got := s.WorkspaceRootID("ghost"); got != "" {
+		t.Fatalf("unknown agent: got %q want empty", got)
+	}
+}
+
+func TestWorkspaceRootIDCycleSafe(t *testing.T) {
+	s := &State{Agents: []Agent{
+		{ID: "a", Parent: "b"},
+		{ID: "b", Parent: "a"},
+	}}
+	// must terminate (not loop forever) AND return "" on a cycle
+	if got := s.WorkspaceRootID("a"); got != "" {
+		t.Fatalf("cycle must yield empty root, got %q", got)
+	}
+}
+
+func TestWorkspaceForLooksUpKey(t *testing.T) {
+	s := &State{
+		Agents:     []Agent{{ID: "root", Parent: ""}, {ID: "leaf", Parent: "root"}},
+		Workspaces: []Workspace{{RootID: "root", E2E: true, Key: []byte("k")}},
+	}
+	w, ok := s.WorkspaceFor("leaf")
+	if !ok || !w.E2E {
+		t.Fatalf("expected e2e workspace, got %v %v", w, ok)
+	}
+}

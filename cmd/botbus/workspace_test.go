@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -56,7 +57,7 @@ func fakeDeps(t *testing.T) hostagent.Deps {
 // workspaceCreate persists an org-root: an agent with no Parent.
 func TestWorkspaceCreatePersistsOrgRoot(t *testing.T) {
 	deps := fakeDeps(t)
-	root, err := workspaceCreate(context.Background(), deps, "acme")
+	root, err := workspaceCreate(context.Background(), deps, "acme", false)
 	if err != nil {
 		t.Fatalf("workspaceCreate: %v", err)
 	}
@@ -83,7 +84,7 @@ func TestWorkspaceCreatePersistsOrgRoot(t *testing.T) {
 // it, returning a join URL that contains the member's inbox + ?user=<user>.
 func TestWorkspaceInviteCreatesMemberUnderRoot(t *testing.T) {
 	deps := fakeDeps(t)
-	root, err := workspaceCreate(context.Background(), deps, "acme")
+	root, err := workspaceCreate(context.Background(), deps, "acme", false)
 	if err != nil {
 		t.Fatalf("workspaceCreate: %v", err)
 	}
@@ -117,7 +118,7 @@ func TestWorkspaceInviteCreatesMemberUnderRoot(t *testing.T) {
 // the join URL's query.
 func TestWorkspaceInviteEscapesUser(t *testing.T) {
 	deps := fakeDeps(t)
-	if _, err := workspaceCreate(context.Background(), deps, "acme"); err != nil {
+	if _, err := workspaceCreate(context.Background(), deps, "acme", false); err != nil {
 		t.Fatalf("workspaceCreate: %v", err)
 	}
 	joinURL, err := workspaceInvite(context.Background(), deps, "a b", "acme")
@@ -151,7 +152,7 @@ func TestWorkspaceInviteMissingWorkspaceErrors(t *testing.T) {
 // workspace list (via hostagent.List) returns the org-root + every member.
 func TestWorkspaceListReturnsRootAndMembers(t *testing.T) {
 	deps := fakeDeps(t)
-	if _, err := workspaceCreate(context.Background(), deps, "acme"); err != nil {
+	if _, err := workspaceCreate(context.Background(), deps, "acme", false); err != nil {
 		t.Fatalf("workspaceCreate: %v", err)
 	}
 	if _, err := workspaceInvite(context.Background(), deps, "alice", "acme"); err != nil {
@@ -182,7 +183,7 @@ func TestWorkspaceListReturnsRootAndMembers(t *testing.T) {
 // id.
 func TestWorkspaceCreateSetsActiveWorkspace(t *testing.T) {
 	deps := fakeDeps(t)
-	root, err := workspaceCreate(context.Background(), deps, "acme")
+	root, err := workspaceCreate(context.Background(), deps, "acme", false)
 	if err != nil {
 		t.Fatalf("workspaceCreate: %v", err)
 	}
@@ -202,11 +203,11 @@ func TestWorkspaceCreateSetsActiveWorkspace(t *testing.T) {
 // org-root id.
 func TestWorkspaceUseSwitchesActive(t *testing.T) {
 	deps := fakeDeps(t)
-	acme, err := workspaceCreate(context.Background(), deps, "acme")
+	acme, err := workspaceCreate(context.Background(), deps, "acme", false)
 	if err != nil {
 		t.Fatalf("workspaceCreate acme: %v", err)
 	}
-	beta, err := workspaceCreate(context.Background(), deps, "beta")
+	beta, err := workspaceCreate(context.Background(), deps, "beta", false)
 	if err != nil {
 		t.Fatalf("workspaceCreate beta: %v", err)
 	}
@@ -230,7 +231,7 @@ func TestWorkspaceUseSwitchesActive(t *testing.T) {
 // workspace) and does NOT change the active workspace.
 func TestWorkspaceUseMissingErrors(t *testing.T) {
 	deps := fakeDeps(t)
-	acme, err := workspaceCreate(context.Background(), deps, "acme")
+	acme, err := workspaceCreate(context.Background(), deps, "acme", false)
 	if err != nil {
 		t.Fatalf("workspaceCreate: %v", err)
 	}
@@ -250,6 +251,78 @@ func TestWorkspaceUseMissingErrors(t *testing.T) {
 	}
 	if s.ActiveWorkspace != acme.ID {
 		t.Fatalf("active workspace changed to %q on a failed use; want unchanged %q", s.ActiveWorkspace, acme.ID)
+	}
+}
+
+// workspaceCreate with e2e:true must persist a Workspace record with E2E=true,
+// a 32-byte key/salt, and a valid AdminPub/AdminPriv keypair. The org-root
+// agent must have a SignSeed.
+func TestWorkspaceCreateE2EPersistsWorkspaceRecord(t *testing.T) {
+	deps := fakeDeps(t)
+	root, err := workspaceCreate(context.Background(), deps, "secure", true)
+	if err != nil {
+		t.Fatalf("workspaceCreate(e2e): %v", err)
+	}
+	if len(root.SignSeed) != ed25519.SeedSize {
+		t.Fatalf("org-root SignSeed length = %d, want %d", len(root.SignSeed), ed25519.SeedSize)
+	}
+
+	s, err := agentstate.Load(deps.StatePath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(s.Workspaces) != 1 {
+		t.Fatalf("expected 1 workspace record, got %d", len(s.Workspaces))
+	}
+	ws := s.Workspaces[0]
+	if ws.RootID != root.ID {
+		t.Fatalf("workspace RootID = %q, want %q", ws.RootID, root.ID)
+	}
+	if !ws.E2E {
+		t.Fatal("workspace E2E must be true")
+	}
+	if ws.Epoch != 1 {
+		t.Fatalf("workspace Epoch = %d, want 1", ws.Epoch)
+	}
+	if len(ws.Key) != 32 {
+		t.Fatalf("workspace Key length = %d, want 32", len(ws.Key))
+	}
+	if len(ws.Salt) != 32 {
+		t.Fatalf("workspace Salt length = %d, want 32", len(ws.Salt))
+	}
+	if len(ws.AdminPub) != ed25519.PublicKeySize {
+		t.Fatalf("workspace AdminPub length = %d, want %d", len(ws.AdminPub), ed25519.PublicKeySize)
+	}
+	// AdminPriv is stored as a 32-byte seed.
+	if len(ws.AdminPriv) != ed25519.SeedSize {
+		t.Fatalf("workspace AdminPriv length = %d, want %d", len(ws.AdminPriv), ed25519.SeedSize)
+	}
+	// Verify AdminPub corresponds to AdminPriv.
+	derived := ed25519.NewKeyFromSeed(ws.AdminPriv).Public().(ed25519.PublicKey)
+	if !derived.Equal(ed25519.PublicKey(ws.AdminPub)) {
+		t.Fatal("AdminPub does not match derived public key from AdminPriv")
+	}
+}
+
+// workspaceInvite into an e2e workspace must give the member a SignSeed.
+func TestWorkspaceInviteE2EMemberGetsSignSeed(t *testing.T) {
+	deps := fakeDeps(t)
+	if _, err := workspaceCreate(context.Background(), deps, "secure", true); err != nil {
+		t.Fatalf("workspaceCreate(e2e): %v", err)
+	}
+	joinURL, err := workspaceInvite(context.Background(), deps, "alice", "secure")
+	if err != nil {
+		t.Fatalf("workspaceInvite: %v", err)
+	}
+	if joinURL == "" {
+		t.Fatal("joinURL is empty")
+	}
+	member, ok, err := hostagent.GetByName(deps.StatePath, "alice")
+	if err != nil || !ok {
+		t.Fatalf("GetByName alice: ok=%v err=%v", ok, err)
+	}
+	if len(member.SignSeed) != ed25519.SeedSize {
+		t.Fatalf("e2e member SignSeed length = %d, want %d", len(member.SignSeed), ed25519.SeedSize)
 	}
 }
 

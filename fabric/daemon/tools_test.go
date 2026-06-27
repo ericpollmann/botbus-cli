@@ -42,7 +42,7 @@ func TestSendStampsAndPublishes(t *testing.T) {
 
 	err := Send(ctx, fake, "outbound-chan", "myth-compiler", SendArgs{
 		To: []string{"myth-boss"}, Kind: "dm", Body: "need review",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestSendStampsAndPublishes(t *testing.T) {
 
 func TestSendDefaultsKindToChat(t *testing.T) {
 	fake := hubclient.NewFake()
-	if err := Send(context.Background(), fake, "out", "a", SendArgs{Body: "hi"}); err != nil {
+	if err := Send(context.Background(), fake, "out", "a", SendArgs{Body: "hi"}, nil); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	raw := fake.Published("out")[0]

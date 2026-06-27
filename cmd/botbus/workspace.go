@@ -8,6 +8,8 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"flag"
 	"fmt"
 	"io"
@@ -20,15 +22,53 @@ import (
 )
 
 // workspaceCreate mints the org-root anchor for a workspace: an agent with no
-// parent. Members are later invited under it.
-func workspaceCreate(ctx context.Context, d hostagent.Deps, name string) (agentstate.Agent, error) {
-	return hostagent.Create(ctx, d, hostagent.CreateOpts{Name: name})
+// parent. Members are later invited under it. When e2e is true the workspace
+// gets an encryption key set and the org-root agent gets a signing seed.
+func workspaceCreate(ctx context.Context, d hostagent.Deps, name string, e2e bool) (agentstate.Agent, error) {
+	root, err := hostagent.Create(ctx, d, hostagent.CreateOpts{Name: name, E2E: e2e})
+	if err != nil {
+		return agentstate.Agent{}, err
+	}
+	if !e2e {
+		return root, nil
+	}
+	// Mint workspace key material: 32-byte symmetric key, 32-byte HKDF salt,
+	// and an admin Ed25519 keypair (pinned for device-set signing).
+	var key, salt [32]byte
+	if _, err := rand.Read(key[:]); err != nil {
+		return agentstate.Agent{}, fmt.Errorf("generate workspace key: %w", err)
+	}
+	if _, err := rand.Read(salt[:]); err != nil {
+		return agentstate.Agent{}, fmt.Errorf("generate workspace salt: %w", err)
+	}
+	adminPub, adminPrivKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return agentstate.Agent{}, fmt.Errorf("generate admin keypair: %w", err)
+	}
+	s, err := agentstate.Load(d.StatePath)
+	if err != nil {
+		return agentstate.Agent{}, fmt.Errorf("load state: %w", err)
+	}
+	s.Workspaces = append(s.Workspaces, agentstate.Workspace{
+		RootID:    root.ID,
+		E2E:       true,
+		Epoch:     1,
+		Key:       key[:],
+		Salt:      salt[:],
+		AdminPub:  []byte(adminPub),
+		AdminPriv: adminPrivKey.Seed(),
+	})
+	if err := agentstate.Save(d.StatePath, s); err != nil {
+		return agentstate.Agent{}, fmt.Errorf("save workspace: %w", err)
+	}
+	return root, nil
 }
 
 // workspaceInvite finds the workspace's org-root by name and creates a member
 // agent parented to it, returning the member's join URL. The join URL embeds the
 // member's inbox channel as the host and carries the (url-escaped) user as a
-// query param — it IS the member's credential.
+// query param — it IS the member's credential. For e2e workspaces the member
+// also receives a signing seed.
 func workspaceInvite(ctx context.Context, d hostagent.Deps, user, wsName string) (joinURL string, err error) {
 	root, ok, err := hostagent.GetByName(d.StatePath, wsName)
 	if err != nil {
@@ -37,7 +77,15 @@ func workspaceInvite(ctx context.Context, d hostagent.Deps, user, wsName string)
 	if !ok {
 		return "", fmt.Errorf("no workspace named %q — create it first", wsName)
 	}
-	member, err := hostagent.Create(ctx, d, hostagent.CreateOpts{Name: user, Parent: root.ID})
+	// Propagate E2E flag for member agents in e2e workspaces so they get a
+	// signing seed too.
+	s, err := agentstate.Load(d.StatePath)
+	if err != nil {
+		return "", fmt.Errorf("load state: %w", err)
+	}
+	ws, isE2E := s.WorkspaceFor(root.ID)
+	memberE2E := isE2E && ws.E2E
+	member, err := hostagent.Create(ctx, d, hostagent.CreateOpts{Name: user, Parent: root.ID, E2E: memberE2E})
 	if err != nil {
 		return "", err
 	}
@@ -107,13 +155,31 @@ func workspaceCmd(args []string) {
 	ctx := context.Background()
 	switch args[0] {
 	case "create":
-		if len(args) < 2 || args[1] == "" {
+		// Parse: create <name> [--e2e]
+		fs := flag.NewFlagSet("workspace create", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		e2eFlag := fs.Bool("e2e", false, "create an end-to-end encrypted workspace")
+		var positionals []string
+		rest := args[1:]
+		for {
+			if err := fs.Parse(rest); err != nil {
+				workspaceUsage()
+				os.Exit(2)
+			}
+			rest = fs.Args()
+			if len(rest) == 0 {
+				break
+			}
+			positionals = append(positionals, rest[0])
+			rest = rest[1:]
+		}
+		if len(positionals) != 1 || positionals[0] == "" {
 			workspaceUsage()
 			os.Exit(2)
 		}
-		name := args[1]
+		name := positionals[0]
 		deps := realDeps()
-		a, err := workspaceCreate(ctx, deps, name)
+		a, err := workspaceCreate(ctx, deps, name, *e2eFlag)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "create:", err)
 			os.Exit(1)
@@ -123,7 +189,11 @@ func workspaceCmd(args []string) {
 			fmt.Fprintln(os.Stderr, "create:", err)
 			os.Exit(1)
 		}
-		fmt.Printf("created workspace %q\n  root id: %s\n  channel: https://%s.%s\n", a.Name, a.ID, a.InboxChannel, domain)
+		if *e2eFlag {
+			fmt.Printf("created e2e workspace %q\n  root id: %s\n  channel: https://%s.%s\n", a.Name, a.ID, a.InboxChannel, domain)
+		} else {
+			fmt.Printf("created workspace %q\n  root id: %s\n  channel: https://%s.%s\n", a.Name, a.ID, a.InboxChannel, domain)
+		}
 	case "invite":
 		user, ws, ok := parseInviteArgs(args[1:])
 		if !ok {
@@ -167,5 +237,5 @@ func workspaceCmd(args []string) {
 }
 
 func workspaceUsage() {
-	fmt.Fprintln(os.Stderr, "usage: botbus workspace <create <name>|invite <user> --workspace <name>|use <name>|list>")
+	fmt.Fprintln(os.Stderr, "usage: botbus workspace <create <name> [--e2e]|invite <user> --workspace <name>|use <name>|list>")
 }

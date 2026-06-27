@@ -187,6 +187,45 @@ editing the state file:
 botbus daemon --router http://127.0.0.1:8090   # dev router for this run only
 ```
 
+## End-to-end encryption (v1, opt-in)
+
+Create a workspace with `--e2e` to opt that workspace into content encryption:
+
+```sh
+botbus workspace create my-secure-ws --e2e
+```
+
+**What is encrypted:** message subject and body are encrypted with the
+workspace's symmetric key (AES-GCM-256, key derived via HKDF). Metadata
+(sender identity, channel IDs, routing topology) remains cleartext on the
+relay.
+
+**Signing:** each e2e agent receives an ed25519 signing seed at creation time.
+On the same host, sibling agents can verify each other's signatures via a
+locally seeded device set (populated at daemon attach). Cross-host device
+distribution (admin-signed roster channel) is a follow-up.
+
+**Known limitations (v1):**
+
+- **No forward secrecy.** The workspace key is static for an epoch; key
+  compromise exposes all messages in that epoch. Epoch rotation (periodic
+  rekeying) is planned but not yet implemented.
+- **No cryptographic revocation.** Removing a member from the workspace does
+  not prevent them from decrypting messages sent before removal. Mitigation:
+  epoch rotation with a fresh key issued only to current members.
+- **In-memory replay window and sender counters.** The daemon tracks a sliding
+  replay window and per-sender counters in memory only. A daemon restart can
+  transiently drop or over-accept messages around the restart boundary. This is
+  acceptable for v1 but will be addressed by persisting counters in a later
+  epoch.
+- **Metadata is cleartext.** Channel IDs, sender handles, and routing
+  information are not encrypted. Only message content (subject/body) is
+  protected.
+- **Fail-closed inbound filtering.** E2E agents reject all unencrypted inbound
+  frames — a compromised relay cannot inject unauthenticated cleartext. The
+  connect welcome is delivered locally (it is computed from local state and
+  never traverses the relay) for e2e workspaces.
+
 ## Layout
 
 ```

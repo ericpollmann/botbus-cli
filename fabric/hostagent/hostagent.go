@@ -7,6 +7,8 @@ package hostagent
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"fmt"
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
@@ -33,6 +35,18 @@ type CreateOpts struct {
 	Mode      string
 	Parent    string
 	ModelTier string
+	E2E       bool // when true, a 32-byte ed25519 signing seed is generated for this agent
+}
+
+// newSignSeed generates a fresh 32-byte ed25519 signing seed (from the private
+// key's seed bytes). Panics only on a catastrophic OS random-source failure
+// (as GenerateKey would).
+func newSignSeed() ([]byte, error) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generate sign seed: %w", err)
+	}
+	return priv.Seed(), nil
 }
 
 // Batch defaults match the router's batcher defaults (see botbus router).
@@ -86,6 +100,13 @@ func Create(ctx context.Context, d Deps, o CreateOpts) (agentstate.Agent, error)
 		BatchN:       defaultBatchN,
 		BatchBytes:   defaultBatchBytes,
 		ModelTier:    o.ModelTier,
+	}
+	if o.E2E {
+		seed, err := newSignSeed()
+		if err != nil {
+			return agentstate.Agent{}, fmt.Errorf("generate sign seed: %w", err)
+		}
+		a.SignSeed = seed
 	}
 
 	s.Upsert(a)

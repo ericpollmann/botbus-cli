@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/ed25519"
 	"net"
 	"net/http"
 	"strings"
@@ -35,12 +36,15 @@ type Daemon struct {
 	mintKey func() string
 	domain  string
 
-	mu       sync.Mutex                    // guards state.Agents, runtimes, handlers, cancels, serving, runCtx, ctl
+	mu       sync.Mutex                    // guards state.Agents, runtimes, handlers, cancels, serving, runCtx, ctl, counters
 	handlers map[string]http.Handler       // capability key -> cached streamable MCP handler
 	cancels  map[string]context.CancelFunc // agentID -> loop canceller (set only while serving)
 	runCtx   context.Context               // parent ctx for attached agents' loops (set in RunOn)
 	ctl      *control.Client               // resolved control client (set in RunOn)
 	serving  bool                          // true while RunOn is active
+	devices  *deviceSet
+	replay   *replayWindow
+	counters map[string]uint64 // keyed by "deviceID|channelID|epoch"; lazy-init in nextCounter
 }
 
 // Config is the full set of runtime collaborators.
@@ -65,12 +69,30 @@ func NewRuntime(c Config) *Daemon {
 		control: c.Control, profile: c.Profile, mintKey: c.MintKey, domain: c.Domain,
 		handlers: make(map[string]http.Handler),
 		cancels:  make(map[string]context.CancelFunc),
+		devices:  newDeviceSet(),
+		replay:   newReplayWindow(),
 	}
 }
 
 // New is the back-compat constructor (inbox/MCP only; control built lazily in Run).
 func New(state *agentstate.State, statePath string, hub hubclient.HubClient) *Daemon {
 	return NewRuntime(Config{State: state, StatePath: statePath, Hub: hub})
+}
+
+// seedDeviceFor registers the agent's ed25519 pubkey in the local device set
+// when the agent has a valid SignSeed and belongs to an e2e workspace. This
+// allows same-host sibling agents to verify each other's signatures without a
+// roster channel. Safe to call without holding d.mu (deviceSet.set is
+// internally locked; WorkspaceFor only reads state).
+func (d *Daemon) seedDeviceFor(a agentstate.Agent) {
+	if len(a.SignSeed) != ed25519.SeedSize {
+		return
+	}
+	ws, ok := d.state.WorkspaceFor(a.ID)
+	if !ok || !ws.E2E {
+		return
+	}
+	d.devices.set(a.ID, ed25519.NewKeyFromSeed(a.SignSeed).Public().(ed25519.PublicKey))
 }
 
 // attach wires an agent into the live daemon: ensures it has a runtime, is in
@@ -94,6 +116,10 @@ func (d *Daemon) attach(a agentstate.Agent) {
 	ctl := d.ctl
 	d.mu.Unlock()
 
+	// Seed the local device set for e2e agents (outside mu hold; both calls are
+	// independently locked).
+	d.seedDeviceFor(a)
+
 	if !startLoops {
 		return
 	}
@@ -102,7 +128,7 @@ func (d *Daemon) attach(a agentstate.Agent) {
 	// correct outcome for a create-then-immediately-remove.
 	go runInbox(loopCtx, rt, d.hub, a.InboxChannel, a.Cursor, func(cur string) {
 		_ = agentstate.SetCursor(d.statePath, a.ID, cur)
-	})
+	}, d.openerFor(a.ID))
 	go runPresence(loopCtx, ctl, a)
 }
 

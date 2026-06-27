@@ -24,7 +24,7 @@ func TestInboxDeliversToNextTool(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runInbox(ctx, rt, fake, "inbox-c", "", func(string) {})
+	go runInbox(ctx, rt, fake, "inbox-c", "", func(string) {}, func(e envelope.Envelope) (envelope.Envelope, bool) { return e, true })
 	time.Sleep(30 * time.Millisecond)
 
 	fake.Inject("inbox-c", makeBatch(t, "c1",
