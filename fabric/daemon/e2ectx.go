@@ -49,6 +49,19 @@ func (d *Daemon) e2eContextFor(agentID string) (*e2eCtx, bool, error) {
 	}, true, nil
 }
 
+// currentKey returns the workspace's current symmetric key, read under d.mu so
+// the opener observes rotations applied by the roster-ingest loop.
+func (d *Daemon) currentKey(ws *agentstate.Workspace) ([32]byte, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(ws.Key) != 32 {
+		return [32]byte{}, false
+	}
+	var k [32]byte
+	copy(k[:], ws.Key)
+	return k, true
+}
+
 // nextCounter returns the next monotonically-increasing sender counter for the
 // (deviceID, channelID, epoch) triple, starting at 1. Counters are held in an
 // in-memory map on the Daemon; persistence across restarts is out of scope for

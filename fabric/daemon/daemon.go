@@ -331,6 +331,17 @@ func (d *Daemon) RunOn(ctx context.Context, ln net.Listener) error {
 	return err
 }
 
+// persistWorkspaceKey best-effort saves ws's key/epoch to state.json after a
+// roster-ingested rotation. No-op when statePath is unset (tests).
+func (d *Daemon) persistWorkspaceKey(ws *agentstate.Workspace) {
+	if d.statePath == "" {
+		return
+	}
+	if err := agentstate.Save(d.statePath, d.state); err != nil {
+		log.Printf("roster: persist workspace key: %v", err)
+	}
+}
+
 // Run binds Addr() itself, then delegates to RunOn (back-compat).
 func (d *Daemon) Run(ctx context.Context) error {
 	ln, err := net.Listen("tcp", d.Addr())
