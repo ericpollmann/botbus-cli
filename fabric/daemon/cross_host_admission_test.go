@@ -106,7 +106,7 @@ func TestCrossHostJoinAdmitConverge(t *testing.T) {
 	}
 
 	// --- Joiner processes grant ---
-	joinerWs, recoveredKey, ok := ProcessAdmitGrant(grant, joinerEncPriv[:])
+	joinerWs, recoveredKey, ok := ProcessAdmitGrant(grant, joinerEncPriv[:], adminPub)
 	if !ok {
 		t.Fatal("ProcessAdmitGrant failed")
 	}
@@ -202,5 +202,97 @@ func TestCrossHostJoinAdmitConverge(t *testing.T) {
 	// Verify admin signature on the anchor blob.
 	if !ed25519.Verify(adminPub, rosterFrame.AnchorBlob, rosterFrame.AnchorSig) {
 		t.Fatal("anchor blob signature invalid")
+	}
+}
+
+// TestProcessAdmitGrantRejectsForgedGrant verifies that ProcessAdmitGrant
+// rejects grants where (a) AdminPub is swapped, (b) payload fields are tampered
+// after signing, or (c) the wrong expectedAdminPub is passed.
+func TestProcessAdmitGrantRejectsForgedGrant(t *testing.T) {
+	ctx := context.Background()
+
+	var wsKey [32]byte
+	rand.Read(wsKey[:])
+
+	adminPub, adminPrivSeed, _ := ed25519.GenerateKey(rand.Reader)
+	adminRootPub, _, _ := ed25519.GenerateKey(rand.Reader)
+
+	joinerEncPub, joinerEncPriv, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	joinerSignPub, _, _ := ed25519.GenerateKey(rand.Reader)
+
+	fake := hubclient.NewFake()
+	adminState := &agentstate.State{
+		Agents: []agentstate.Agent{{ID: "admin-root"}},
+		Workspaces: []agentstate.Workspace{{
+			RootID:      "admin-root",
+			E2E:         true,
+			Epoch:       1,
+			Key:         wsKey[:],
+			AdminPub:    adminPub,
+			AdminPriv:   adminPrivSeed.Seed(),
+			Roster:      "roster2",
+			WaitingRoom: "wroom2",
+		}},
+	}
+	dAdmin := &Daemon{
+		state:  adminState,
+		hub:    fake,
+		trust:  newTrustGraph(),
+		replay: newReplayWindow(),
+	}
+	dAdmin.trust.anchors.set("admin-root", adminRootPub)
+	ws := &adminState.Workspaces[0]
+
+	req := JoinRequest{
+		ReqID:   "joiner-x",
+		Name:    "joiner",
+		SignPub: joinerSignPub,
+		EncPub:  joinerEncPub[:],
+	}
+	grant, err := dAdmin.AdmitJoinRequest(ctx, ws, req)
+	if err != nil {
+		t.Fatalf("AdmitJoinRequest: %v", err)
+	}
+
+	// Baseline: valid grant + correct expectedAdminPub must succeed.
+	if _, _, ok := ProcessAdmitGrant(grant, joinerEncPriv[:], adminPub); !ok {
+		t.Fatal("baseline: valid grant must be accepted")
+	}
+
+	// (a) Swap AdminPub to an attacker's key → rejected.
+	attackerPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	forgedA := grant
+	forgedA.AdminPub = []byte(attackerPub)
+	if _, _, ok := ProcessAdmitGrant(forgedA, joinerEncPriv[:], adminPub); ok {
+		t.Fatal("(a) grant with wrong AdminPub must be rejected")
+	}
+
+	// (b) Tamper WrappedKey after signing → signature check fails → rejected.
+	forgedB := grant
+	forgedB.WrappedKey = append([]byte(nil), grant.WrappedKey...)
+	forgedB.WrappedKey[0] ^= 0xFF
+	if _, _, ok := ProcessAdmitGrant(forgedB, joinerEncPriv[:], adminPub); ok {
+		t.Fatal("(b) grant with tampered WrappedKey must be rejected")
+	}
+
+	// (b2) Tamper RootID after signing → signature check fails → rejected.
+	forgedB2 := grant
+	forgedB2.RootID = "evil-root"
+	if _, _, ok := ProcessAdmitGrant(forgedB2, joinerEncPriv[:], adminPub); ok {
+		t.Fatal("(b2) grant with tampered RootID must be rejected")
+	}
+
+	// (c) Pass wrong expectedAdminPub → rejected.
+	wrongPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	if _, _, ok := ProcessAdmitGrant(grant, joinerEncPriv[:], []byte(wrongPub)); ok {
+		t.Fatal("(c) wrong expectedAdminPub must be rejected")
+	}
+
+	// (c2) Empty expectedAdminPub → rejected.
+	if _, _, ok := ProcessAdmitGrant(grant, joinerEncPriv[:], nil); ok {
+		t.Fatal("(c2) empty expectedAdminPub must be rejected")
 	}
 }

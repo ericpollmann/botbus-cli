@@ -1,10 +1,12 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
@@ -33,6 +35,39 @@ type AdmitGrant struct {
 	AdminPub    []byte `json:"adminPub"`
 	Roster      string `json:"roster"`
 	WaitingRoom string `json:"waitingRoom"`
+	Sig         []byte `json:"sig,omitempty"`
+}
+
+// grantSignedPayload returns the canonical byte string that the admin signs
+// when issuing an AdmitGrant. The Sig field itself is NOT included.
+//
+// Format: domain-tag + LP(ReqID) + LP(AnchorID) + LP(RootID) +
+//
+//	Epoch(uint32-LE) + LP(WrappedKey) + LP(AdminPub) +
+//	LP(Roster) + LP(WaitingRoom)
+//
+// where LP(x) = uint32-LE len(x) followed by x.
+func grantSignedPayload(g AdmitGrant) []byte {
+	lp := func(b []byte) []byte {
+		prefix := make([]byte, 4)
+		binary.LittleEndian.PutUint32(prefix, uint32(len(b)))
+		return append(prefix, b...)
+	}
+	lpStr := func(s string) []byte { return lp([]byte(s)) }
+
+	var out []byte
+	out = append(out, []byte("botbus-e2e-grant-v1\x00")...)
+	out = append(out, lpStr(g.ReqID)...)
+	out = append(out, lpStr(g.AnchorID)...)
+	out = append(out, lpStr(g.RootID)...)
+	epoch := make([]byte, 4)
+	binary.LittleEndian.PutUint32(epoch, g.Epoch)
+	out = append(out, epoch...)
+	out = append(out, lp(g.WrappedKey)...)
+	out = append(out, lp(g.AdminPub)...)
+	out = append(out, lpStr(g.Roster)...)
+	out = append(out, lpStr(g.WaitingRoom)...)
+	return out
 }
 
 // Marshal serialises a JoinRequest to JSON.
@@ -131,7 +166,7 @@ func (d *Daemon) AdmitJoinRequest(ctx context.Context, ws *agentstate.Workspace,
 		return AdmitGrant{}, err
 	}
 
-	// 3. Build and publish the grant.
+	// 3. Build, sign, and publish the grant.
 	grant := AdmitGrant{
 		ReqID:       req.ReqID,
 		AnchorID:    req.ReqID,
@@ -142,6 +177,7 @@ func (d *Daemon) AdmitJoinRequest(ctx context.Context, ws *agentstate.Workspace,
 		Roster:      ws.Roster,
 		WaitingRoom: ws.WaitingRoom,
 	}
+	grant.Sig = ed25519.Sign(ed25519.NewKeyFromSeed(ws.AdminPriv), grantSignedPayload(grant))
 	grantBytes, err := grant.Marshal()
 	if err != nil {
 		return AdmitGrant{}, err
@@ -154,8 +190,20 @@ func (d *Daemon) AdmitJoinRequest(ctx context.Context, ws *agentstate.Workspace,
 
 // ProcessAdmitGrant unwraps the workspace key from the grant and returns a
 // populated Workspace. Returns (nil, [32]byte{}, false) on any failure.
-func ProcessAdmitGrant(grant AdmitGrant, encPriv []byte) (*agentstate.Workspace, [32]byte, bool) {
+//
+// expectedAdminPub is the Ed25519 public key of the admin the joiner verified
+// out-of-band (e.g. via SAS fingerprint). The grant is rejected if AdminPub
+// doesn't match, or if the grant signature is invalid.
+func ProcessAdmitGrant(grant AdmitGrant, encPriv []byte, expectedAdminPub []byte) (*agentstate.Workspace, [32]byte, bool) {
 	if len(encPriv) != 32 {
+		return nil, [32]byte{}, false
+	}
+	// Reject if expectedAdminPub is absent or doesn't match the grant's AdminPub.
+	if len(expectedAdminPub) == 0 || !bytes.Equal(grant.AdminPub, expectedAdminPub) {
+		return nil, [32]byte{}, false
+	}
+	// Verify the admin signed this grant (authenticates the sealed box).
+	if !ed25519.Verify(ed25519.PublicKey(grant.AdminPub), grantSignedPayload(grant), grant.Sig) {
 		return nil, [32]byte{}, false
 	}
 	var priv [32]byte

@@ -67,6 +67,10 @@ func (d *deviceSet) applySigned(blob, sig []byte, adminPub ed25519.PublicKey) er
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	// Reject strictly-stale epochs to prevent replay of older admin-signed blobs.
+	if parsed.Epoch < d.epoch {
+		return fmt.Errorf("e2e: device set epoch %d is older than current epoch %d", parsed.Epoch, d.epoch)
+	}
 	d.epoch = parsed.Epoch
 	d.pubs = make(map[string]ed25519.PublicKey, len(parsed.Devices))
 	for id, pub := range parsed.Devices {
