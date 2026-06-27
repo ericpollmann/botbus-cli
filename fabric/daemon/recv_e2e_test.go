@@ -29,8 +29,8 @@ func TestOpenerDecryptsValidMessage(t *testing.T) {
 		Agents:     []agentstate.Agent{{ID: "root"}, {ID: "bob", Parent: "root", SignSeed: priv.Seed()}},
 		Workspaces: []agentstate.Workspace{{RootID: "root", E2E: true, Epoch: 7, Key: key[:]}},
 	}
-	d := &Daemon{state: st, devices: newDeviceSet(), replay: newReplayWindow()}
-	d.devices.set("alice", pub) // sender's device pubkey known to receiver
+	d := &Daemon{state: st, trust: newTrustGraph(), replay: newReplayWindow()}
+	d.trust.anchors.set("alice", pub) // sender's device pubkey known to receiver
 
 	env := sealedEnvelope(t, key, 7, "root", "alice", priv, 1, "hi subj", "hi body")
 	open := d.openerFor("bob")
@@ -51,8 +51,8 @@ func TestOpenerDropsReplay(t *testing.T) {
 		Agents:     []agentstate.Agent{{ID: "root"}, {ID: "bob", Parent: "root", SignSeed: priv.Seed()}},
 		Workspaces: []agentstate.Workspace{{RootID: "root", E2E: true, Epoch: 7, Key: key[:]}},
 	}
-	d := &Daemon{state: st, devices: newDeviceSet(), replay: newReplayWindow()}
-	d.devices.set("alice", pub)
+	d := &Daemon{state: st, trust: newTrustGraph(), replay: newReplayWindow()}
+	d.trust.anchors.set("alice", pub)
 	env := sealedEnvelope(t, key, 7, "root", "alice", priv, 1, "s", "b")
 	open := d.openerFor("bob")
 	if _, ok := open(env); !ok {
@@ -71,7 +71,7 @@ func TestOpenerDropsUnknownDevice(t *testing.T) {
 		Agents:     []agentstate.Agent{{ID: "root"}, {ID: "bob", Parent: "root", SignSeed: priv.Seed()}},
 		Workspaces: []agentstate.Workspace{{RootID: "root", E2E: true, Epoch: 7, Key: key[:]}},
 	}
-	d := &Daemon{state: st, devices: newDeviceSet(), replay: newReplayWindow()} // empty device set
+	d := &Daemon{state: st, trust: newTrustGraph(), replay: newReplayWindow()} // empty trust graph
 	env := sealedEnvelope(t, key, 7, "root", "alice", priv, 1, "s", "b")
 	if _, ok := d.openerFor("bob")(env); ok {
 		t.Fatal("unknown device must be dropped")

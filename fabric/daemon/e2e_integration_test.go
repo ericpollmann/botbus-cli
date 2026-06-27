@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
+	"github.com/ericpollmann/botbus-cli/fabric/e2e"
 	"github.com/ericpollmann/botbus-proto/envelope"
 	"github.com/ericpollmann/botbus-proto/hubclient"
 )
@@ -33,14 +34,14 @@ func TestTwoDaemonE2EConvergenceRelayBlind(t *testing.T) {
 			Workspaces: []agentstate.Workspace{{RootID: "root", E2E: true, Epoch: 1, Key: key[:], AdminPub: adminPub}},
 		}
 	}
-	dA := &Daemon{state: mkState("alice", alicePriv.Seed()), hub: fake, devices: newDeviceSet(), replay: newReplayWindow()}
-	dB := &Daemon{state: mkState("bob", bobPriv.Seed()), hub: fake, devices: newDeviceSet(), replay: newReplayWindow()}
+	dA := &Daemon{state: mkState("alice", alicePriv.Seed()), hub: fake, trust: newTrustGraph(), replay: newReplayWindow()}
+	dB := &Daemon{state: mkState("bob", bobPriv.Seed()), hub: fake, trust: newTrustGraph(), replay: newReplayWindow()}
 
-	// Admin-signed device set naming both devices, delivered to B (the real path
+	// Admin-signed anchor set naming alice, delivered to B (the real path
 	// is the roster channel; here inject the signed blob B verifies).
 	blob := marshalDeviceSet(signedDeviceSet{Epoch: 1, Devices: map[string][]byte{"alice": alicePub}})
 	sig := ed25519.Sign(adminPriv, blob)
-	if err := dB.devices.applySigned(blob, sig, adminPub); err != nil {
+	if err := dB.trust.applyAnchorSet(blob, sig, adminPub); err != nil {
 		t.Fatal(err)
 	}
 
@@ -70,8 +71,8 @@ func TestTwoDaemonE2EConvergenceRelayBlind(t *testing.T) {
 	var otherKey [32]byte
 	rand.Read(otherKey[:])
 	dC := &Daemon{
-		state:   &agentstate.State{Agents: []agentstate.Agent{{ID: "root"}, {ID: "carol", Parent: "root", SignSeed: bobPriv.Seed()}}, Workspaces: []agentstate.Workspace{{RootID: "root", E2E: true, Epoch: 1, Key: otherKey[:], AdminPub: adminPub}}},
-		devices: dB.devices, replay: newReplayWindow(),
+		state: &agentstate.State{Agents: []agentstate.Agent{{ID: "root"}, {ID: "carol", Parent: "root", SignSeed: bobPriv.Seed()}}, Workspaces: []agentstate.Workspace{{RootID: "root", E2E: true, Epoch: 1, Key: otherKey[:], AdminPub: adminPub}}},
+		trust: dB.trust, replay: newReplayWindow(),
 	}
 	if _, ok := dC.openerFor("carol")(e); ok {
 		t.Fatal("a daemon with the wrong workspace key must not decrypt")
@@ -101,12 +102,12 @@ func TestTwoDaemonE2ETamperedCiphertextDropped(t *testing.T) {
 			Workspaces: []agentstate.Workspace{{RootID: "root", E2E: true, Epoch: 1, Key: key[:], AdminPub: adminPub}},
 		}
 	}
-	dA := &Daemon{state: mkState("alice", alicePriv.Seed()), hub: fake, devices: newDeviceSet(), replay: newReplayWindow()}
-	dB := &Daemon{state: mkState("bob", bobPriv.Seed()), hub: fake, devices: newDeviceSet(), replay: newReplayWindow()}
+	dA := &Daemon{state: mkState("alice", alicePriv.Seed()), hub: fake, trust: newTrustGraph(), replay: newReplayWindow()}
+	dB := &Daemon{state: mkState("bob", bobPriv.Seed()), hub: fake, trust: newTrustGraph(), replay: newReplayWindow()}
 
 	blob := marshalDeviceSet(signedDeviceSet{Epoch: 1, Devices: map[string][]byte{"alice": alicePub}})
 	sig := ed25519.Sign(adminPriv, blob)
-	if err := dB.devices.applySigned(blob, sig, adminPub); err != nil {
+	if err := dB.trust.applyAnchorSet(blob, sig, adminPub); err != nil {
 		t.Fatal(err)
 	}
 
@@ -160,7 +161,7 @@ func TestE2EAgentDropsCleartextFrame(t *testing.T) {
 		},
 		Workspaces: []agentstate.Workspace{{RootID: "root", E2E: true, Epoch: 1, Key: key[:]}},
 	}
-	dB := &Daemon{state: st, devices: newDeviceSet(), replay: newReplayWindow()}
+	dB := &Daemon{state: st, trust: newTrustGraph(), replay: newReplayWindow()}
 
 	// Construct a cleartext envelope (Enc == "").
 	cleartext := envelope.Envelope{
@@ -175,5 +176,96 @@ func TestE2EAgentDropsCleartextFrame(t *testing.T) {
 	// Fail-closed: cleartext frames must be dropped for e2e agents.
 	if ok {
 		t.Fatal("e2e agent must drop cleartext frames (fail-closed)")
+	}
+}
+
+// TestOpenerAcceptsRemoteAgentViaCertChain verifies that a remote agent whose
+// signing key is certified by an admitted anchor is accepted by the receiver's
+// opener. The remote agent ("carol") is not in the local agent state; it was
+// onboarded on a different host. The receiving daemon ("bob") knows alice as an
+// anchor and has a cert alice → carol; carol seals a message; bob opens it.
+func TestOpenerAcceptsRemoteAgentViaCertChain(t *testing.T) {
+	var key [32]byte
+	rand.Read(key[:])
+	adminPub, adminPriv, _ := ed25519.GenerateKey(rand.Reader)
+	alicePub, alicePriv, _ := ed25519.GenerateKey(rand.Reader)
+	carolPub, carolPriv, _ := ed25519.GenerateKey(rand.Reader)
+	_, bobPriv, _ := ed25519.GenerateKey(rand.Reader)
+
+	// Receiver: bob's daemon. Workspace root is "root"; bob is a child.
+	st := &agentstate.State{
+		Agents: []agentstate.Agent{
+			{ID: "root"},
+			{ID: "bob", Parent: "root", SignSeed: bobPriv.Seed(), InboxChannel: "inbox-bob"},
+		},
+		Workspaces: []agentstate.Workspace{{RootID: "root", E2E: true, Epoch: 1, Key: key[:], AdminPub: adminPub}},
+	}
+	dB := &Daemon{state: st, trust: newTrustGraph(), replay: newReplayWindow()}
+
+	// Admit alice as an anchor via admin-signed blob.
+	blob := marshalDeviceSet(signedDeviceSet{Epoch: 1, Devices: map[string][]byte{"alice": alicePub}})
+	sig := ed25519.Sign(adminPriv, blob)
+	if err := dB.trust.applyAnchorSet(blob, sig, adminPub); err != nil {
+		t.Fatalf("applyAnchorSet: %v", err)
+	}
+
+	// Alice certifies carol (carol is on a different host — not in dB's agentstate).
+	dB.trust.addCert(e2e.SignCert(alicePriv, "carol", "alice", carolPub))
+
+	// Carol seals a message using the shared workspace key. The channelID is the
+	// workspace RootID (same convention as same-host messages).
+	channelID := "root"
+	env, err := e2e.SealMessage(key, 1, channelID, "carol", carolPriv, 1, encodeContent("remote-subj", "remote-body"))
+	if err != nil {
+		t.Fatalf("SealMessage: %v", err)
+	}
+	wrapped := envelope.Envelope{V: 1, ID: "m-carol", From: "carol", Kind: envelope.KindChat,
+		Enc: base64.StdEncoding.EncodeToString(env.Marshal())}
+
+	got, ok := dB.openerFor("bob")(wrapped)
+	if !ok {
+		t.Fatal("opener must accept remote agent carol with cert from admitted anchor alice")
+	}
+	if got.Subject != "remote-subj" || got.Body != "remote-body" {
+		t.Fatalf("decrypted content mismatch: %+v", got)
+	}
+}
+
+// TestOpenerDropsUnanchoredRemoteAgent verifies that a remote agent whose cert
+// chain does not trace to an admitted anchor is rejected. "dave" has a cert
+// from "mallory", but mallory is not an anchor and has no cert of her own.
+func TestOpenerDropsUnanchoredRemoteAgent(t *testing.T) {
+	var key [32]byte
+	rand.Read(key[:])
+	_, adminPriv, _ := ed25519.GenerateKey(rand.Reader)
+	adminPub := adminPriv.Public().(ed25519.PublicKey)
+	malloryPub, malloryPriv, _ := ed25519.GenerateKey(rand.Reader)
+	davePub, davePriv, _ := ed25519.GenerateKey(rand.Reader)
+	_, bobPriv, _ := ed25519.GenerateKey(rand.Reader)
+
+	st := &agentstate.State{
+		Agents: []agentstate.Agent{
+			{ID: "root"},
+			{ID: "bob", Parent: "root", SignSeed: bobPriv.Seed(), InboxChannel: "inbox-bob"},
+		},
+		Workspaces: []agentstate.Workspace{{RootID: "root", E2E: true, Epoch: 1, Key: key[:], AdminPub: adminPub}},
+	}
+	dB := &Daemon{state: st, trust: newTrustGraph(), replay: newReplayWindow()}
+
+	// No anchors admitted for mallory — she is a stranger.
+	// Dave has a cert signed by mallory, but mallory is not trusted.
+	_ = malloryPub // used only via cert
+	dB.trust.addCert(e2e.SignCert(malloryPriv, "dave", "mallory", davePub))
+
+	channelID := "root"
+	env, err := e2e.SealMessage(key, 1, channelID, "dave", davePriv, 1, encodeContent("s", "b"))
+	if err != nil {
+		t.Fatalf("SealMessage: %v", err)
+	}
+	wrapped := envelope.Envelope{V: 1, ID: "m-dave", From: "dave", Kind: envelope.KindChat,
+		Enc: base64.StdEncoding.EncodeToString(env.Marshal())}
+
+	if _, ok := dB.openerFor("bob")(wrapped); ok {
+		t.Fatal("opener must drop dave whose cert chain does not reach an admitted anchor")
 	}
 }
