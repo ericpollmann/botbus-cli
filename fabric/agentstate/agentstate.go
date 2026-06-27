@@ -42,6 +42,7 @@ type Agent struct {
 	Cursor       string        `json:"cursor,omitempty"`
 	Filters      []filter.Rule `json:"filters,omitempty"`
 	SignSeed     []byte        `json:"signSeed,omitempty"` // 32-byte Ed25519 seed; deviceID == Agent.ID
+	EncPriv      []byte        `json:"encPriv,omitempty"`  // 32-byte X25519 private key (e2e agents only)
 }
 
 // Workspace holds e2e encryption config for an org-root.
