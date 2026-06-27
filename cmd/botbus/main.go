@@ -20,6 +20,8 @@
 //	                                    # MCP setup hints print to stderr.
 //	                                    # Aliases: --monitor = --listen,
 //	                                    # --skip = --name.
+//	                                    # Add --filter NAME to only print
+//	                                    # messages from a specific sender.
 //
 // File layout: ui.go owns the TUI (model/view/colors), ws.go owns the
 // WebSocket loop, this file is just orchestration.
@@ -149,6 +151,7 @@ type cliArgs struct {
 	channel string
 	monitor bool
 	name    string
+	filter  string // --filter: only print messages from this sender
 }
 
 // parseArgs walks os.Args[1:] and returns the parsed flags. --name (alias
@@ -170,6 +173,11 @@ func parseArgs(argv []string) cliArgs {
 		case "--name", "--skip":
 			if i+1 < len(argv) {
 				a.name = argv[i+1]
+				i++
+			}
+		case "--filter":
+			if i+1 < len(argv) {
+				a.filter = argv[i+1]
 				i++
 			}
 		default:
@@ -264,7 +272,7 @@ func main() {
 		// Channel ID is the host minus ".botbus.ai" — strip it for display.
 		channelID := strings.TrimSuffix(hostFromURL(u), ".botbus.ai")
 		fmt.Fprint(os.Stderr, monitorBanner(channelID, name))
-		runMonitor(ctx, recv, audio, states, name)
+		runMonitor(ctx, recv, audio, states, name, args.filter)
 		return
 	}
 

@@ -40,10 +40,11 @@ func monitorBanner(channelID, name string) string {
 // runMonitor pumps incoming text frames to stdout one per line as "name: body".
 // Designed for agent wake-up loops: a Monitor wraps this command and gets
 // notified on each peer message. The agent's own broadcasts (from `name`)
-// are filtered so the agent doesn't notify on itself. Audio frames are
-// dropped silently — agents don't (yet) handle audio. State changes log to
-// stderr so the wrapping Monitor doesn't see them as channel content.
-func runMonitor(ctx context.Context, recv, audio <-chan []byte, states <-chan connState, name string) {
+// are filtered so the agent doesn't notify on itself. If filter is non-empty,
+// only messages from that sender are printed. Audio frames are dropped
+// silently. State changes log to stderr so the wrapping Monitor doesn't see
+// them as channel content.
+func runMonitor(ctx context.Context, recv, audio <-chan []byte, states <-chan connState, name, filter string) {
 	// Drain side channels so runWS never blocks on full buffers.
 	go func() {
 		for range audio {
@@ -75,6 +76,9 @@ func runMonitor(ctx context.Context, recv, audio <-chan []byte, states <-chan co
 			}
 			if from == name {
 				continue // our own broadcast (cross-connection); skip
+			}
+			if filter != "" && from != filter {
+				continue // --filter: only print messages from the specified sender
 			}
 			fmt.Printf("%s: %s\n", from, body)
 		}
