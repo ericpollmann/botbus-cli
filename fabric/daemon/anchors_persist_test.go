@@ -34,19 +34,22 @@ func TestAdmitPersistsAnchorAndFreshRotateRewraps(t *testing.T) {
 	fresh.hydrateWorkspaceTrust(ws)
 
 	rosterBefore := len(fake.Published("roster"))
-	newKey, err := fresh.RotateKey(ctx, ws)
-	if err != nil {
+	if _, err := fresh.RotateKey(ctx, ws); err != nil {
 		t.Fatalf("RotateKey: %v", err)
 	}
-	// RotateKey must have published a sealed rekey frame targeting joiner-1,
+	// RotateKey must have published a signed rekey grant targeting joiner-1,
 	// whose wrapped key is decryptable by encPriv.
+	adminPub := append([]byte(nil), ws.AdminPub...)
 	found := false
 	for _, f := range fake.Published("roster")[rosterBefore:] {
-		rf, err := openRosterFrame(newKey, f)
-		if err != nil || rf.Kind != "rekey" || rf.AnchorID != "joiner-1" {
+		if len(f) == 0 || f[0] != '{' {
 			continue
 		}
-		if _, ok := unwrapKey(rf.WrappedKey, *encPriv); ok {
+		g, perr := parseAdmitGrant([]byte(f))
+		if perr != nil || g.AnchorID != "joiner-1" {
+			continue
+		}
+		if _, _, ok := ProcessRekey(g, encPriv[:], adminPub); ok {
 			found = true
 		}
 	}

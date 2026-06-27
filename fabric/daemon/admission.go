@@ -184,6 +184,33 @@ func (d *Daemon) AdmitJoinRequest(ctx context.Context, ws *agentstate.Workspace,
 	return grant, nil
 }
 
+// verifyGrant validates expectedAdminPub, the admin signature, and unwraps the
+// workspace key. Returns (key, true) only when all three succeed.
+func verifyGrant(grant AdmitGrant, encPriv []byte, expectedAdminPub []byte) ([32]byte, bool) {
+	if len(encPriv) != 32 {
+		return [32]byte{}, false
+	}
+	if len(expectedAdminPub) == 0 || !bytes.Equal(grant.AdminPub, expectedAdminPub) {
+		return [32]byte{}, false
+	}
+	if !ed25519.Verify(ed25519.PublicKey(grant.AdminPub), grantSignedPayload(grant), grant.Sig) {
+		return [32]byte{}, false
+	}
+	var priv [32]byte
+	copy(priv[:], encPriv)
+	return unwrapKey(grant.WrappedKey, priv)
+}
+
+// ProcessRekey validates a signed rekey grant published on the roster and
+// returns the new workspace key + epoch for an existing member to adopt.
+func ProcessRekey(grant AdmitGrant, encPriv []byte, expectedAdminPub []byte) (key [32]byte, epoch uint32, ok bool) {
+	k, good := verifyGrant(grant, encPriv, expectedAdminPub)
+	if !good {
+		return [32]byte{}, 0, false
+	}
+	return k, grant.Epoch, true
+}
+
 // ProcessAdmitGrant unwraps the workspace key from the grant and returns a
 // populated Workspace. Returns (nil, [32]byte{}, false) on any failure.
 //
@@ -191,20 +218,7 @@ func (d *Daemon) AdmitJoinRequest(ctx context.Context, ws *agentstate.Workspace,
 // out-of-band (e.g. via SAS fingerprint). The grant is rejected if AdminPub
 // doesn't match, or if the grant signature is invalid.
 func ProcessAdmitGrant(grant AdmitGrant, encPriv []byte, expectedAdminPub []byte) (*agentstate.Workspace, [32]byte, bool) {
-	if len(encPriv) != 32 {
-		return nil, [32]byte{}, false
-	}
-	// Reject if expectedAdminPub is absent or doesn't match the grant's AdminPub.
-	if len(expectedAdminPub) == 0 || !bytes.Equal(grant.AdminPub, expectedAdminPub) {
-		return nil, [32]byte{}, false
-	}
-	// Verify the admin signed this grant (authenticates the sealed box).
-	if !ed25519.Verify(ed25519.PublicKey(grant.AdminPub), grantSignedPayload(grant), grant.Sig) {
-		return nil, [32]byte{}, false
-	}
-	var priv [32]byte
-	copy(priv[:], encPriv)
-	key, ok := unwrapKey(grant.WrappedKey, priv)
+	key, ok := verifyGrant(grant, encPriv, expectedAdminPub)
 	if !ok {
 		return nil, [32]byte{}, false
 	}

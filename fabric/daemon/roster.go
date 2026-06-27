@@ -17,12 +17,10 @@ var rosterAAD = []byte("botbus-e2e-roster-v1")
 
 // rosterFrame is the cleartext-before-sealing roster payload.
 type rosterFrame struct {
-	Kind       string    `json:"kind"`                 // "cert" | "anchors" | "rekey"
+	Kind       string    `json:"kind"`                 // "cert" | "anchors"
 	Cert       *e2e.Cert `json:"cert,omitempty"`       // Kind=="cert"
 	AnchorBlob []byte    `json:"anchorBlob,omitempty"` // admin-signed device-set blob, Kind=="anchors"
 	AnchorSig  []byte    `json:"anchorSig,omitempty"`  // admin signature over AnchorBlob
-	WrappedKey []byte    `json:"wrappedKey,omitempty"` // NaCl-sealed new key, Kind=="rekey"
-	AnchorID   string    `json:"anchorId,omitempty"`   // target anchor for this rekey frame
 }
 
 // sealRosterFrame JSON-encodes f, seals it with e2e.Seal under key/epoch/rosterAAD,
