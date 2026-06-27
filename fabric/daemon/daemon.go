@@ -38,16 +38,15 @@ type Daemon struct {
 	mintKey func() string
 	domain  string
 
-	mu        sync.Mutex                    // guards state.Agents, runtimes, handlers, cancels, serving, runCtx, ctl, counters, anchorEnc
-	handlers  map[string]http.Handler       // capability key -> cached streamable MCP handler
-	cancels   map[string]context.CancelFunc // agentID -> loop canceller (set only while serving)
-	runCtx    context.Context               // parent ctx for attached agents' loops (set in RunOn)
-	ctl       *control.Client               // resolved control client (set in RunOn)
-	serving   bool                          // true while RunOn is active
-	trust     *trustGraph
-	replay    *replayWindow
-	counters  map[string]uint64 // keyed by "deviceID|channelID|epoch"; lazy-init in nextCounter
-	anchorEnc map[string][]byte // anchorID -> X25519 enc pubkey; in-memory only (not persisted across restarts)
+	mu       sync.Mutex                    // guards state.Agents, runtimes, handlers, cancels, serving, runCtx, ctl, counters
+	handlers map[string]http.Handler       // capability key -> cached streamable MCP handler
+	cancels  map[string]context.CancelFunc // agentID -> loop canceller (set only while serving)
+	runCtx   context.Context               // parent ctx for attached agents' loops (set in RunOn)
+	ctl      *control.Client               // resolved control client (set in RunOn)
+	serving  bool                          // true while RunOn is active
+	trust    *trustGraph
+	replay   *replayWindow
+	counters map[string]uint64 // keyed by "deviceID|channelID|epoch"; lazy-init in nextCounter
 }
 
 // Config is the full set of runtime collaborators.
@@ -70,11 +69,10 @@ func NewRuntime(c Config) *Daemon {
 	return &Daemon{
 		state: c.State, statePath: c.StatePath, hub: c.Hub, runtimes: rts,
 		control: c.Control, profile: c.Profile, mintKey: c.MintKey, domain: c.Domain,
-		handlers:  make(map[string]http.Handler),
-		cancels:   make(map[string]context.CancelFunc),
-		trust:     newTrustGraph(),
-		replay:    newReplayWindow(),
-		anchorEnc: make(map[string][]byte),
+		handlers: make(map[string]http.Handler),
+		cancels:  make(map[string]context.CancelFunc),
+		trust:    newTrustGraph(),
+		replay:   newReplayWindow(),
 	}
 }
 
@@ -110,6 +108,23 @@ func (d *Daemon) seedLocalTrust(a agentstate.Agent) {
 	}
 	parentPriv := ed25519.NewKeyFromSeed(parent.SignSeed)
 	d.trust.addCert(e2e.SignCert(parentPriv, a.ID, a.Parent, childPub))
+}
+
+// hydrateWorkspaceTrust rebuilds the in-memory trust graph for ws from persisted
+// state so a fresh process (one-shot CLI or restarted daemon) has the COMPLETE
+// anchor set: local agents (root → anchor, children → parent-signed certs) plus
+// every persisted remote anchor. Idempotent.
+func (d *Daemon) hydrateWorkspaceTrust(ws *agentstate.Workspace) {
+	for _, a := range d.state.Agents {
+		if d.state.WorkspaceRootID(a.ID) == ws.RootID {
+			d.seedLocalTrust(a)
+		}
+	}
+	for _, ar := range ws.Anchors {
+		if len(ar.SignPub) == ed25519.SeedSize || len(ar.SignPub) == ed25519.PublicKeySize {
+			d.trust.anchors.set(ar.ID, ed25519.PublicKey(ar.SignPub))
+		}
+	}
 }
 
 // attach wires an agent into the live daemon: ensures it has a runtime, is in

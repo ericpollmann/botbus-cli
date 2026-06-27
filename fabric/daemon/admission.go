@@ -132,17 +132,13 @@ func (d *Daemon) AdmitJoinRequest(ctx context.Context, ws *agentstate.Workspace,
 		return AdmitGrant{}, err
 	}
 
-	// Record the joiner's enc pubkey for future key rotation re-wraps.
-	// In-memory only: not persisted across restarts (see anchorEnc field comment).
+	// Record the joiner as a persisted anchor (source of truth for future rekeys).
 	if len(req.EncPub) == 32 {
-		d.mu.Lock()
-		if d.anchorEnc == nil {
-			d.anchorEnc = make(map[string][]byte)
-		}
-		enc := make([]byte, 32)
-		copy(enc, req.EncPub)
-		d.anchorEnc[req.ReqID] = enc
-		d.mu.Unlock()
+		ws.Anchors = upsertAnchor(ws.Anchors, agentstate.AnchorRef{
+			ID:      req.ReqID,
+			SignPub: append([]byte(nil), req.SignPub...),
+			EncPub:  append([]byte(nil), req.EncPub...),
+		})
 	}
 
 	// Publish anchor update to roster.
@@ -222,6 +218,17 @@ func ProcessAdmitGrant(grant AdmitGrant, encPriv []byte, expectedAdminPub []byte
 		WaitingRoom: grant.WaitingRoom,
 	}
 	return ws, key, true
+}
+
+// upsertAnchor replaces the entry with the same ID in list, or appends it.
+func upsertAnchor(list []agentstate.AnchorRef, a agentstate.AnchorRef) []agentstate.AnchorRef {
+	for i := range list {
+		if list[i].ID == a.ID {
+			list[i] = a
+			return list
+		}
+	}
+	return append(list, a)
 }
 
 // sasFingerprint returns a short human-comparable string derived from

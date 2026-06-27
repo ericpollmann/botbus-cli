@@ -45,6 +45,15 @@ type Agent struct {
 	EncPriv      []byte        `json:"encPriv,omitempty"`  // 32-byte X25519 private key (e2e agents only)
 }
 
+// AnchorRef is a persisted record of an admitted remote anchor: the identity
+// (Ed25519) the admin signs into the anchor set, and the X25519 encryption
+// pubkey a rotated workspace key is wrapped to. Stored on the admin host only.
+type AnchorRef struct {
+	ID      string `json:"id"`
+	SignPub []byte `json:"signPub"`
+	EncPub  []byte `json:"encPub"`
+}
+
 // Workspace holds e2e encryption config for an org-root.
 type Workspace struct {
 	RootID      string `json:"rootId"`
@@ -55,7 +64,8 @@ type Workspace struct {
 	AdminPub    []byte `json:"adminPub,omitempty"`    // pinned admin Ed25519 pubkey
 	AdminPriv   []byte `json:"adminPriv,omitempty"`   // admin Ed25519 private key (stored only on creator host)
 	Roster      string `json:"roster,omitempty"`      // per-workspace roster channel id for cert distribution
-	WaitingRoom string `json:"waitingRoom,omitempty"` // channel where join requests arrive before admission
+	WaitingRoom string      `json:"waitingRoom,omitempty"` // channel where join requests arrive before admission
+	Anchors     []AnchorRef `json:"anchors,omitempty"`     // admitted remote anchors (admin host); source of truth for rekey re-wraps
 }
 
 // State is the full contents of the local state file.

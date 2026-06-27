@@ -10,15 +10,10 @@ import (
 
 // RotateKey generates a fresh 32-byte workspace key, increments the epoch,
 // re-publishes the anchor set at the new epoch, and delivers a "rekey" roster
-// frame (wrapping the new key) to every admitted anchor that has a recorded
-// enc-pubkey.
+// frame (wrapping the new key) to every admitted anchor recorded in ws.Anchors.
 //
 // The old key is intentionally not erased here — callers and openers that hold
 // a short retention window for old-epoch messages continue to work uninterrupted.
-//
-// anchorEnc is in-memory only and not persisted across daemon restarts; anchors
-// that were admitted before the current process started will not receive rekey
-// frames. Persisting anchorEnc is a planned future enhancement.
 func (d *Daemon) RotateKey(ctx context.Context, ws *agentstate.Workspace) ([32]byte, error) {
 	// 1. Generate fresh key and bump epoch.
 	var newKey [32]byte
@@ -46,28 +41,19 @@ func (d *Daemon) RotateKey(ctx context.Context, ws *agentstate.Workspace) ([32]b
 		return [32]byte{}, err
 	}
 
-	// 4. Re-wrap the new key to each admitted anchor that has a recorded enc-pub.
-	d.mu.Lock()
-	encPubs := make(map[string][]byte, len(d.anchorEnc))
-	for id, pub := range d.anchorEnc {
-		cp := make([]byte, len(pub))
-		copy(cp, pub)
-		encPubs[id] = cp
-	}
-	d.mu.Unlock()
-
-	for anchorID, encPubBytes := range encPubs {
+	// 4. Re-wrap the new key to each persisted anchor.
+	for _, ar := range ws.Anchors {
+		if len(ar.EncPub) != 32 {
+			continue
+		}
 		var encPub [32]byte
-		copy(encPub[:], encPubBytes)
+		copy(encPub[:], ar.EncPub)
 		wrapped, err := wrapKey(newKey, encPub)
 		if err != nil {
 			return [32]byte{}, err
 		}
-		rekeySealed, err := sealRosterFrame(newKey, newEpoch, rosterFrame{
-			Kind:       "rekey",
-			WrappedKey: wrapped,
-			AnchorID:   anchorID,
-		})
+		// (rekey publish — Task 2 changes the wire format; keep current sealed form for now)
+		rekeySealed, err := sealRosterFrame(newKey, newEpoch, rosterFrame{Kind: "rekey", WrappedKey: wrapped, AnchorID: ar.ID})
 		if err != nil {
 			return [32]byte{}, err
 		}
@@ -79,16 +65,16 @@ func (d *Daemon) RotateKey(ctx context.Context, ws *agentstate.Workspace) ([32]b
 	return newKey, nil
 }
 
-// RemoveAnchor evicts anchorID from the trust graph, drops its enc-pub record
-// so it receives no future rekey frames, and then calls RotateKey so the
-// removed anchor cannot decrypt the new epoch's traffic.
+// RemoveAnchor evicts anchorID from the trust graph, drops it from ws.Anchors,
+// and then calls RotateKey so the removed anchor cannot decrypt the new epoch's traffic.
 func (d *Daemon) RemoveAnchor(ctx context.Context, ws *agentstate.Workspace, anchorID string) ([32]byte, error) {
-	// 1. Drop anchor from trust graph and enc-pub map.
 	d.trust.anchors.remove(anchorID)
-	d.mu.Lock()
-	delete(d.anchorEnc, anchorID)
-	d.mu.Unlock()
-
-	// 2. Rotate (so the evicted anchor never receives the new key).
+	out := ws.Anchors[:0]
+	for _, ar := range ws.Anchors {
+		if ar.ID != anchorID {
+			out = append(out, ar)
+		}
+	}
+	ws.Anchors = out
 	return d.RotateKey(ctx, ws)
 }
