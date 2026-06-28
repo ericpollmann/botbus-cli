@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
 	"github.com/ericpollmann/botbus-cli/fabric/control"
+	"github.com/ericpollmann/botbus-proto/hubclient"
 )
 
 // TestStateWatchNoRaceUnderTraffic runs the watcher at a 1ms poll while an
@@ -31,14 +33,16 @@ func TestStateWatchNoRaceUnderTraffic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d := NewRuntime(Config{State: st, StatePath: p, Hub: newCountingHub(), Control: control.NewClient(srv.URL), Domain: "botbus.ai"})
+	hub := newCountingHub()
+	d := NewRuntime(Config{State: st, StatePath: p, Hub: hub, Control: control.NewClient(srv.URL), Domain: "botbus.ai"})
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = d.Run(ctx) }()
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 
-	// External writer: rewrite state.json with rising epochs.
+	// External writer: rewrite state.json with rising epochs AND growing agent
+	// list (exercises the C1 ws.Key/Epoch writer + C2 d.state.Agents appender).
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -49,14 +53,45 @@ func TestStateWatchNoRaceUnderTraffic(t *testing.T) {
 				return
 			default:
 			}
+			agents := []agentstate.Agent{
+				{ID: "root", Key: "rootkey", InboxChannel: "root-inbox"},
+				{ID: fmt.Sprintf("a%d", epoch), Key: "extrakey", InboxChannel: fmt.Sprintf("a%d-inbox", epoch)},
+			}
 			next := &agentstate.State{
 				Daemon:     st.Daemon,
-				Agents:     st.Agents,
+				Agents:     agents,
 				Workspaces: []agentstate.Workspace{{RootID: "root", E2E: true, Epoch: epoch, Key: k(byte(epoch)), Roster: "roster"}},
 			}
 			_ = agentstate.Save(p, next)
 			epoch++
 			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	// Injector: pump roster frames into the fake hub to drive ingestRosterFrame
+	// and ingestRekeyGrant — the goroutines that race-read ws.Key/ws.AdminPub
+	// and d.state.Agents (C1 + C2 paths).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		i := 0
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			var body string
+			if i%2 == 0 {
+				// JSON rekey grant — starts with '{', reaches d.state.AgentByID (C2).
+				// wrappedKey is base64 for 3 bytes so len > 0, triggering AgentByID.
+				body = `{"anchorId":"root","wrappedKey":"AAAA"}`
+			} else {
+				// Non-'{' garbage sealed frame — reaches keyArray(ws.Key) (C1).
+				body = "Zm9vYmFy"
+			}
+			hub.Inject("roster", hubclient.Frame{Body: body})
+			i++
 		}
 	}()
 
