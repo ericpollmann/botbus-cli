@@ -27,31 +27,40 @@ func keyArray(b []byte) ([32]byte, error) {
 }
 
 func (d *Daemon) e2eContextFor(agentID string) (*e2eCtx, bool, error) {
+	// Hold d.mu for all reads of d.state (Agents + Workspaces) to avoid a data
+	// race with attach/detach (Upsert/Remove) and applyRekey, which all write
+	// d.state under the lock. Copy all needed values out before releasing.
+	d.mu.Lock()
 	ws, ok := d.state.WorkspaceFor(agentID)
 	if !ok || !ws.E2E {
+		d.mu.Unlock()
 		return nil, false, nil // plaintext path
 	}
-	// Read ws.Key and ws.Epoch under d.mu to avoid a data race with applyRekey,
-	// which writes them under the lock. Copy the bytes out before releasing.
-	d.mu.Lock()
 	keyBytes := append([]byte(nil), ws.Key...)
 	epoch := ws.Epoch
+	rootID := ws.RootID
+	wsPtr := ws
+	ag, agOK := d.state.AgentByID(agentID)
+	var signSeed []byte
+	if agOK && len(ag.SignSeed) == ed25519.SeedSize {
+		signSeed = append([]byte(nil), ag.SignSeed...)
+	}
 	d.mu.Unlock()
+
 	key, err := keyArray(keyBytes)
 	if err != nil {
 		return nil, true, err
 	}
-	ag, ok := d.state.AgentByID(agentID)
-	if !ok || len(ag.SignSeed) != ed25519.SeedSize {
+	if !agOK || len(signSeed) != ed25519.SeedSize {
 		return nil, true, errors.New("e2e: agent missing device signing seed")
 	}
 	return &e2eCtx{
 		key:       key,
 		epoch:     epoch,
-		channelID: ws.RootID,
+		channelID: rootID,
 		deviceID:  agentID,
-		devPriv:   ed25519.NewKeyFromSeed(ag.SignSeed),
-		ws:        ws,
+		devPriv:   ed25519.NewKeyFromSeed(signSeed),
+		ws:        wsPtr,
 	}, true, nil
 }
 

@@ -220,6 +220,26 @@ func rotateBackups(path string, current []byte) error {
 	return os.WriteFile(backupName(path, 0), current, 0o600)
 }
 
+// Clone returns a deep copy of the state. All slice fields are copied so
+// mutation of the clone's Agents/Workspaces does not affect the original and
+// vice-versa.
+func (s *State) Clone() *State {
+	c := *s
+	c.Agents = append([]Agent(nil), s.Agents...)
+	c.Workspaces = make([]Workspace, len(s.Workspaces))
+	for i, ws := range s.Workspaces {
+		w := ws
+		w.Key = append([]byte(nil), ws.Key...)
+		w.Salt = append([]byte(nil), ws.Salt...)
+		w.AdminPub = append([]byte(nil), ws.AdminPub...)
+		w.AdminPriv = append([]byte(nil), ws.AdminPriv...)
+		w.Anchors = append([]AnchorRef(nil), ws.Anchors...)
+		w.Pending = append([]PendingJoin(nil), ws.Pending...)
+		c.Workspaces[i] = w
+	}
+	return &c
+}
+
 // Get returns the agent with the given id and whether it was found.
 func (s *State) Get(id string) (Agent, bool) {
 	for _, a := range s.Agents {

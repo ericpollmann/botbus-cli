@@ -63,13 +63,16 @@ type Config struct {
 }
 
 // NewRuntime builds the single local-agent runtime from its collaborators.
+// It clones the provided State so the daemon owns an independent copy; the
+// caller may keep a reference to the original without causing data races.
 func NewRuntime(c Config) *Daemon {
-	rts := make(map[string]*AgentRuntime, len(c.State.Agents))
-	for _, a := range c.State.Agents {
+	st := c.State.Clone()
+	rts := make(map[string]*AgentRuntime, len(st.Agents))
+	for _, a := range st.Agents {
 		rts[a.ID] = newRuntime(a.ID, 1000)
 	}
 	return &Daemon{
-		state: c.State, statePath: c.StatePath, hub: c.Hub, runtimes: rts,
+		state: st, statePath: c.StatePath, hub: c.Hub, runtimes: rts,
 		control: c.Control, profile: c.Profile, mintKey: c.MintKey, domain: c.Domain,
 		handlers:      make(map[string]http.Handler),
 		cancels:       make(map[string]context.CancelFunc),
