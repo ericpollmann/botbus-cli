@@ -21,14 +21,28 @@
 
 export const meta = {
   name: 'botbus-e2e-agent-test',
-  description: 'E2E: Haiku agents coordinate via botbus to build a counter app (FE + BE)',
+  description: 'E2E: Haiku agents coordinate live via botbus to build a counter app (FE + BE)',
   phases: [
-    { title: 'Setup', detail: 'Mint channel, post tasks via orchestrator' },
-    { title: 'FE', detail: 'FE agent joins, announces API contract, builds frontend' },
-    { title: 'BE', detail: 'BE agent joins, confirms API contract, builds backend' },
-    { title: 'Judge', detail: 'Score success, measure friction, write log' },
+    { title: 'Setup', detail: 'Mint a fresh channel' },
+    { title: 'Coordinate', detail: 'FE + BE build live; an observer records the channel transcript' },
+    { title: 'Verify', detail: 'Boot the BE server, curl endpoints, check FE binds the right port' },
+    { title: 'Judge', detail: 'Score against the real transcript + integration result, log friction' },
   ],
 }
+
+// ── v2 design notes ──────────────────────────────────────────────────────────
+// Run 1 (sequential) exposed two harness flaws that masked real behavior:
+//   1. FE ran before BE, so FE always timed out waiting for BE and fell back to
+//      a wrong default port — the product was broken but scored 100.
+//   2. The judge subscribed AFTER all traffic; botbus does not replay history to
+//      a fresh subscription, so the judge saw an empty channel and scored
+//      coordination purely from agent self-reports (untrustworthy).
+// v2 fixes both:
+//   - FE, BE, and a passive OBSERVER all start in one parallel() barrier, so the
+//     observer subscribes at the same instant and captures the LIVE transcript.
+//   - A Verify step actually boots the BE server and curls it, and checks that
+//     FE's configured API base matches BE's listening port — the score now
+//     reflects whether the product actually works, not just whether files exist.
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -37,11 +51,11 @@ const LOG_FILE = '/home/user/botbus-cli/e2e/friction_log.jsonl'
 
 // The minimal "join" prompt that botbus should ideally be able to give any agent.
 // Intentionally terse — friction comes from what's missing or ambiguous here.
-const JOIN_PREAMBLE = `You are a coding agent joining a botbus coordination channel.
+// This is the closest thing to what a real botbus user pastes into their agent.
+const JOIN_PREAMBLE = `You are a coding agent joining a botbus coordination channel to build software with a peer agent.
 
-STEP 0 — load tools:
+STEP 0 — load tools (REQUIRED before any botbus call):
 Call ToolSearch with query "select:mcp__botbus__set_name,mcp__botbus__subscribe,mcp__botbus__send,mcp__botbus__next"
-You must do this before calling any botbus tool.
 
 STEP 1 — identify yourself:
 Call mcp__botbus__set_name with name "AGENT_NAME"
@@ -49,23 +63,14 @@ Call mcp__botbus__set_name with name "AGENT_NAME"
 STEP 2 — join the channel:
 Call mcp__botbus__subscribe with channel "CHANNEL_ID"
 
-STEP 3 — receive your task:
-Call mcp__botbus__next (channel: "CHANNEL_ID", timeout_seconds: 60).
-Your task message starts with the prefix "task:AGENT_ROLE ".
-If the first message has a different prefix, call next() again (up to 5 times total).
-
-STEP 4 — coordinate:
-Read the task. Then call mcp__botbus__send to announce what you need from the other agent
-(e.g. what API endpoints you require, or what API you will expose).
-
-STEP 5 — build:
-Write your code artifact to disk using Bash.
-
-STEP 6 — announce done:
-Call mcp__botbus__send with text "DONE: <absolute path to your file>"
+The rest (announce / listen / build / report) is in YOUR ROLE below.
+IMPORTANT about coordination: botbus does NOT replay messages sent before you
+subscribed. Subscribe FIRST, then announce, then listen. Every record you keep of
+what a peer said must come from a next() call you made AFTER subscribing.
 
 Return a JSON object with keys:
-  subscribed (bool), task_received (bool), announced (bool),
+  subscribed (bool), announced (bool), peer_heard (bool),
+  peer_messages ([string]  — raw bodies of every message you received from the peer),
   file_written (bool), file_path (string or null), friction ([string])
 `
 
@@ -74,94 +79,113 @@ Return a JSON object with keys:
 function fePrompt(channelId) {
   return JOIN_PREAMBLE
     .replace('AGENT_NAME', 'fe-builder')
-    .replace(/CHANNEL_ID/g, channelId)
-    .replace('AGENT_ROLE', 'fe') +
+    .replace(/CHANNEL_ID/g, channelId) +
 `
-YOUR ROLE: Frontend Builder
+YOUR ROLE: Frontend Builder. A peer "be-builder" is building the backend on this
+channel RIGHT NOW, at the same time as you. You must learn its API base URL from it.
 
-Your task (it will arrive labelled "task:fe"):
-  Build a self-contained counter app at ${WORK_DIR}/fe/index.html
-  - Vanilla HTML/CSS/JS, no bundler, no npm
-  - Shows a counter starting at 0
-  - Three buttons: +1, -1, Reset
-  - Reads initial count from GET /api/count → {count: N}
-  - Sends updates via POST /api/increment with body {delta: 1 or -1}
-  - Replace API_BASE_URL placeholder with the URL the BE agent announces
+STEP 3 — announce (immediately after subscribing):
+  mcp__botbus__send text="fe-ready: I need GET /api/count -> {count} and POST /api/increment {delta} -> {count}. What is your base URL?"
 
-In STEP 4, announce: "api-needs: GET /api/count → {count}, POST /api/increment {delta} → {count}"
-After you announce, call mcp__botbus__next once more (timeout_seconds: 30) to see if the BE agent
-confirmed. Include whatever they said in your friction log.
+STEP 4 — listen for the backend's URL:
+  Call mcp__botbus__next (channel "${channelId}", timeout_seconds 30) in a loop, up to 6 times.
+  You are looking for a message from be-builder containing a base URL like http://localhost:PORT
+  (it will start with "be-ready:"). Record every message body you receive in peer_messages.
+  Stop looping once you have the base URL, or after 6 tries.
 
-Build the file even if you don't hear back from BE within the timeout.
+STEP 5 — build ${WORK_DIR}/fe/index.html:
+  - Vanilla HTML/CSS/JS, no bundler, no npm. Counter starts at 0.
+  - Three buttons: +1, -1, Reset.
+  - Set the JS constant API_BASE to the EXACT base URL the backend announced.
+    If and ONLY if you never received one, use http://localhost:3001 and add a
+    friction note saying you had to guess.
+  - GET  \${API_BASE}/api/count to load the initial count.
+  - POST \${API_BASE}/api/increment with body {delta: 1} / {delta: -1}. Reset sets count to 0.
+
+STEP 6: mcp__botbus__send text="fe-done: ${WORK_DIR}/fe/index.html". Set peer_heard=true iff
+you received at least one be-builder message. file_path is the index.html path.
 `
 }
 
-function bePrompt(channelId, feApiAnnouncement) {
+function bePrompt(channelId) {
   return JOIN_PREAMBLE
     .replace('AGENT_NAME', 'be-builder')
-    .replace(/CHANNEL_ID/g, channelId)
-    .replace('AGENT_ROLE', 'be') +
+    .replace(/CHANNEL_ID/g, channelId) +
 `
-YOUR ROLE: Backend Builder
+YOUR ROLE: Backend Builder. A peer "fe-builder" is building the frontend on this
+channel RIGHT NOW. It needs your base URL, so announce it EARLY and clearly.
 
-${feApiAnnouncement ? `The FE agent has already announced their API needs:
-"${feApiAnnouncement}"
-` : 'The FE agent may have already announced their API needs — check the channel.'}
+STEP 3 — announce (immediately after subscribing, before you build):
+  mcp__botbus__send text="be-ready: base URL http://localhost:3001 serving GET /api/count -> {count} and POST /api/increment {delta} -> {count}"
 
-Your task (it will arrive labelled "task:be"):
-  Build an Express.js counter server at ${WORK_DIR}/be/server.js
-  - Port 3001
-  - In-memory counter starting at 0
-  - GET  /api/count       → { count: N }
-  - POST /api/increment   body { delta: N } → { count: N }  (delta can be negative)
-  - Add CORS headers so the frontend can call it
-  - Do NOT require npm install — write the file so it works with: node server.js
-    (assume express is available globally or write it so it can self-install)
+STEP 4 — build ${WORK_DIR}/be/server.js:
+  - A counter server on port 3001, in-memory counter starting at 0.
+  - GET  /api/count      -> {count: N}
+  - POST /api/increment  body {delta: N} -> {count: N}   (delta may be negative)
+  - CORS headers so a browser frontend can call it.
+  - MUST run with exactly: node server.js  (no npm install). Prefer Node's built-in
+    http module over Express so there are zero dependencies.
 
-In STEP 4, confirm: "api-confirmed: I will implement GET /api/count and POST /api/increment on port 3001"
+STEP 5 — listen briefly for the frontend:
+  Call mcp__botbus__next (timeout_seconds 20) up to 3 times. Record bodies in peer_messages.
 
-Build the file. Server URL will be: http://localhost:3001
+STEP 6: mcp__botbus__send text="be-done: ${WORK_DIR}/be/server.js". Set peer_heard=true iff
+you received at least one fe-builder message. file_path is the server.js path.
 `
 }
 
-function judgePrompt(channelId, feResult, beResult) {
-  return `You are evaluating a botbus E2E agent test run.
+function observerPrompt(channelId) {
+  return `You are a passive OBSERVER recording a botbus channel transcript. Do not build anything.
+
+1. ToolSearch query "select:mcp__botbus__set_name,mcp__botbus__subscribe,mcp__botbus__next"
+2. mcp__botbus__set_name name="observer"
+3. mcp__botbus__subscribe channel="${channelId}"   (do this IMMEDIATELY — you must be subscribed before the builders talk)
+4. Drain the channel: call mcp__botbus__next (channel "${channelId}", timeout_seconds 20) in a loop.
+   Keep going until you have received 3 consecutive timeouts in a row, or you have looped 25 times.
+   Record EVERY message as "name: body" using the name and body fields from each result.
+
+Return JSON: { transcript: [string], message_count: number }
+The transcript is the ground-truth record of what the agents actually said to each other.`
+}
+
+function judgePrompt(channelId, feResult, beResult, observerResult, verify) {
+  return `You are the judge of a botbus E2E agent test run. Score what ACTUALLY happened,
+using the ground-truth transcript and integration result below — not the agents' own claims.
 
 Channel: ${channelId}
 
-FE agent reported: ${JSON.stringify(feResult)}
-BE agent reported: ${JSON.stringify(beResult)}
+GROUND-TRUTH CHANNEL TRANSCRIPT (recorded live by a passive observer):
+${JSON.stringify(observerResult?.transcript ?? [], null, 2)}
 
-YOUR TASKS:
+INTEGRATION VERIFICATION (the harness actually booted the BE server and curled it):
+${JSON.stringify(verify, null, 2)}
 
-1. Load tools: ToolSearch "select:mcp__botbus__subscribe,mcp__botbus__next"
-2. Subscribe to channel "${channelId}" and drain remaining messages:
-   call mcp__botbus__next up to 30 times (timeout_seconds: 5 each), stop when status is "timeout"
-   Collect all message bodies.
-3. Check files with Bash:
-   - cat ${WORK_DIR}/fe/index.html  (note: does it exist? does it have the counter UI? does it reference /api/count?)
-   - cat ${WORK_DIR}/be/server.js   (note: does it exist? does it have GET /api/count and POST /api/increment?)
-4. Score the run 0–100:
-   - +20 if FE file exists and is valid HTML with a counter
-   - +20 if FE calls /api/count and /api/increment
-   - +20 if BE file exists and has both endpoints
-   - +20 if the agents exchanged at least one coordination message on the channel
-   - +10 if both agents reported task_received=true
-   - +10 if both agents reported announced=true
+FE agent self-report: ${JSON.stringify(feResult)}
+BE agent self-report: ${JSON.stringify(beResult)}
 
-5. Identify every friction point. Examples of what counts:
-   - Agent failed to load tools (ToolSearch not called or called wrong)
-   - Agent called subscribe but never called next
-   - Agent's next() returned timeout immediately (not subscribed before messages arrived)
-   - Task message not found (consumed by wrong agent)
-   - File not written to expected path
-   - Agent wrote file but path wrong
-   - Coordination messages missing or garbled
-   - Agent did not announce DONE
+SCORING (0–100), based on the transcript and verification, NOT self-reports:
+  +20  BE server booted and GET /api/count returned {count:...}        (see verify.be_boots, verify.get_ok)
+  +20  POST /api/increment changed the count correctly                 (see verify.post_ok)
+  +20  FE file exists, is a counter UI, and calls /api/count + /api/increment  (see verify.fe_ok)
+  +25  FE's configured API base port MATCHES BE's listening port       (see verify.port_match)
+       — this is the real coordination payoff; a mismatch means a broken product
+  +15  The transcript shows BOTH a be-ready (URL announcement) AND an fe-ready message
+       (i.e. the agents actually talked live, not just built in isolation)
 
-Return JSON matching the schema below. Be specific in friction_points — include the exact issue
-and a one-sentence fix suggestion.
-`
+Also set:
+  product_works = (verify.be_boots AND verify.get_ok AND verify.post_ok AND verify.fe_ok AND verify.port_match)
+  coordination_live = (transcript contains BOTH an fe-ready and a be-ready message)
+  success = (score >= 90 AND product_works)
+
+FRICTION — list every friction point. Draw especially on the transcript: did the FE hear the
+BE's URL before building? Did anyone fail to subscribe before talking? Did an agent skip ToolSearch?
+Did the FE fall back to a guessed port? Was the announcement format ambiguous? Each friction point
+needs {phase, agent, issue, severity, fix} where fix is a concrete change to botbus, its onboarding
+copy, or the agent prompt that would remove the friction.
+
+SUGGESTIONS — 3-6 prioritized, concrete improvements to make a Haiku agent succeed here in under a minute.
+
+Return JSON matching the schema.`
 }
 
 // ── Result schema ──────────────────────────────────────────────────────────
@@ -170,25 +194,48 @@ const AGENT_SCHEMA = {
   type: 'object',
   properties: {
     subscribed: { type: 'boolean' },
-    task_received: { type: 'boolean' },
     announced: { type: 'boolean' },
+    peer_heard: { type: 'boolean' },
+    peer_messages: { type: 'array', items: { type: 'string' } },
     file_written: { type: 'boolean' },
     file_path: { type: ['string', 'null'] },
     friction: { type: 'array', items: { type: 'string' } },
   },
-  required: ['subscribed', 'task_received', 'announced', 'file_written', 'file_path', 'friction'],
+  required: ['subscribed', 'announced', 'peer_heard', 'peer_messages', 'file_written', 'file_path', 'friction'],
+}
+
+const OBSERVER_SCHEMA = {
+  type: 'object',
+  required: ['transcript', 'message_count'],
+  properties: {
+    transcript: { type: 'array', items: { type: 'string' } },
+    message_count: { type: 'number' },
+  },
+}
+
+const VERIFY_SCHEMA = {
+  type: 'object',
+  required: ['be_boots', 'get_ok', 'post_ok', 'fe_ok', 'fe_port', 'be_port', 'port_match', 'notes'],
+  properties: {
+    be_boots: { type: 'boolean' },
+    get_ok: { type: 'boolean' },
+    post_ok: { type: 'boolean' },
+    fe_ok: { type: 'boolean' },
+    fe_port: { type: ['number', 'null'] },
+    be_port: { type: ['number', 'null'] },
+    port_match: { type: 'boolean' },
+    notes: { type: 'string' },
+  },
 }
 
 const JUDGE_SCHEMA = {
   type: 'object',
-  required: ['success', 'score', 'fe_file_ok', 'be_file_ok', 'coordination_ok', 'friction_points', 'suggestions'],
+  required: ['success', 'score', 'product_works', 'coordination_live', 'friction_points', 'suggestions'],
   properties: {
     success: { type: 'boolean' },
     score: { type: 'number' },
-    fe_file_ok: { type: 'boolean' },
-    be_file_ok: { type: 'boolean' },
-    coordination_ok: { type: 'boolean' },
-    channel_messages: { type: 'array', items: { type: 'string' } },
+    product_works: { type: 'boolean' },     // BE boots, GET+POST work, ports match
+    coordination_live: { type: 'boolean' }, // transcript shows both fe-ready and be-ready
     friction_points: {
       type: 'array',
       items: {
@@ -209,73 +256,83 @@ const JUDGE_SCHEMA = {
 
 // ── Main ───────────────────────────────────────────────────────────────────
 
-// Phase 1: Create channel and post tasks
+// Phase 1: fresh workspace + fresh channel
 phase('Setup')
 
 await agent(
-  `Run bash command: mkdir -p ${WORK_DIR}/fe ${WORK_DIR}/be`,
+  `Run bash: rm -rf ${WORK_DIR} && mkdir -p ${WORK_DIR}/fe ${WORK_DIR}/be. Return "ok".`,
   { label: 'mkdir', model: 'haiku' }
 )
 
 const setupResult = await agent(`
-You are the test orchestrator. Do this in order:
-
-1. Call ToolSearch with query "select:mcp__botbus__new_channel,mcp__botbus__set_name,mcp__botbus__subscribe,mcp__botbus__send"
-
-2. Call mcp__botbus__set_name with name "orchestrator"
-
-3. Call mcp__botbus__new_channel (no parameters). Extract the channel_id from the response.
-
-4. Call mcp__botbus__subscribe with channel = that channel_id.
-
-5. Call mcp__botbus__send twice, in order:
-   First:  channel=<channel_id>, text="task:fe Build a vanilla JS counter app at ${WORK_DIR}/fe/index.html. Use API base http://localhost:3001. Call GET /api/count to load initial count. Call POST /api/increment with body {delta:1} or {delta:-1} to change it. Three buttons: +1, -1, Reset. Announce your api-needs on this channel before building."
-   Second: channel=<channel_id>, text="task:be Build an Express.js counter server at ${WORK_DIR}/be/server.js on port 3001. GET /api/count returns {count:N}. POST /api/increment with body {delta:N} updates and returns {count:N}. Add CORS. Confirm the FE agent api-needs after you see them."
-
-6. Return ONLY the channel_id string. Nothing else. No explanation.
-`,
-  { label: 'setup-orchestrator', model: 'haiku' }
+Mint a botbus channel for a coordination test.
+1. ToolSearch query "select:mcp__botbus__new_channel"
+2. Call mcp__botbus__new_channel (no parameters).
+3. Return ONLY the channel_id from the response — the bare id, nothing else.`,
+  { label: 'mint-channel', model: 'haiku' }
 )
 
-const channelId = setupResult.trim().split('\n').pop().trim()
+const channelId = setupResult.trim().split(/\s+/).pop().replace(/['"]/g, '').trim()
 log(`Channel: ${channelId}`)
 
 if (!channelId || channelId.length < 8) {
-  log('ERROR: could not extract channel ID from setup. Aborting.')
+  log('ERROR: could not extract channel ID. Aborting.')
   return { success: false, score: 0, error: 'channel_id_extraction_failed', raw: setupResult }
 }
 
-// Phase 2: FE agent
-phase('FE')
+// Phase 2: FE, BE, and observer run concurrently so the agents coordinate LIVE
+// and the observer captures the real transcript. parallel() is the barrier we
+// actually want here: all three must start together.
+phase('Coordinate')
+log('Launching fe-builder, be-builder, and observer concurrently…')
 
-const feResult = await agent(
-  fePrompt(channelId),
-  { label: 'fe-builder', model: 'haiku', schema: AGENT_SCHEMA }
+const [feResult, beResult, observerResult] = await parallel([
+  () => agent(fePrompt(channelId), { label: 'fe-builder', phase: 'Coordinate', model: 'haiku', schema: AGENT_SCHEMA }),
+  () => agent(bePrompt(channelId), { label: 'be-builder', phase: 'Coordinate', model: 'haiku', schema: AGENT_SCHEMA }),
+  () => agent(observerPrompt(channelId), { label: 'observer', phase: 'Coordinate', model: 'haiku', schema: OBSERVER_SCHEMA }),
+])
+
+log(`FE: subscribed=${feResult?.subscribed} announced=${feResult?.announced} peer_heard=${feResult?.peer_heard} file=${feResult?.file_written}`)
+log(`BE: subscribed=${beResult?.subscribed} announced=${beResult?.announced} peer_heard=${beResult?.peer_heard} file=${beResult?.file_written}`)
+log(`Observer captured ${observerResult?.message_count ?? 0} message(s)`)
+;(observerResult?.transcript ?? []).forEach(m => log(`  «${m}»`))
+
+// Phase 3: real integration check — boot the BE server and curl it; inspect FE.
+phase('Verify')
+
+const verify = await agent(`
+You are verifying whether the counter product actually works end to end. Use Bash only.
+
+1. BE server boots:
+   - Run: (cd ${WORK_DIR}/be && timeout 8 node server.js & sleep 2)  — start it in the background.
+     If node server.js needs deps it will fail — note that as be_boots=false.
+2. GET works:
+   - curl -s -m 3 http://localhost:3001/api/count   → expect JSON like {"count":0}. Set get_ok + initial count.
+3. POST works:
+   - curl -s -m 3 -X POST http://localhost:3001/api/increment -H 'Content-Type: application/json' -d '{"delta":5}'
+     → expect {"count":5}. Then curl GET again → expect {"count":5}. Set post_ok if the count changed correctly.
+4. Kill the server: pkill -f "node server.js" || true
+5. Inspect FE:
+   - cat ${WORK_DIR}/fe/index.html
+   - fe_ok = file exists AND has counter buttons AND references /api/count AND /api/increment.
+   - Extract the port the FE points at: grep -oE 'localhost:[0-9]+' ${WORK_DIR}/fe/index.html | head -1
+   - fe_port = that number (or null). be_port = 3001 (the port BE actually listens on — confirm via grep on server.js).
+   - port_match = (fe_port == be_port).
+
+Return JSON with EXACTLY these keys:
+{ be_boots: bool, get_ok: bool, post_ok: bool, fe_ok: bool,
+  fe_port: number|null, be_port: number|null, port_match: bool,
+  notes: string }`,
+  { label: 'verify-integration', model: 'haiku', schema: VERIFY_SCHEMA }
 )
 
-log(`FE: subscribed=${feResult?.subscribed} task=${feResult?.task_received} file=${feResult?.file_written} path=${feResult?.file_path}`)
-if (feResult?.friction?.length) log(`FE friction: ${feResult.friction.join(' | ')}`)
+log(`Verify: boots=${verify?.be_boots} GET=${verify?.get_ok} POST=${verify?.post_ok} fe_ok=${verify?.fe_ok} port_match=${verify?.port_match} (fe:${verify?.fe_port} be:${verify?.be_port})`)
 
-// Phase 3: BE agent — pass FE's API announcement as context to reduce ambiguity
-phase('BE')
-
-const feAnnouncement = feResult?.announced
-  ? `FE agent (fe-builder) announced their API needs on the channel.`
-  : null
-
-const beResult = await agent(
-  bePrompt(channelId, feAnnouncement),
-  { label: 'be-builder', model: 'haiku', schema: AGENT_SCHEMA }
-)
-
-log(`BE: subscribed=${beResult?.subscribed} task=${beResult?.task_received} file=${beResult?.file_written} path=${beResult?.file_path}`)
-if (beResult?.friction?.length) log(`BE friction: ${beResult.friction.join(' | ')}`)
-
-// Phase 4: Judge
+// Phase 4: judge against ground truth
 phase('Judge')
 
 const judgeResult = await agent(
-  judgePrompt(channelId, feResult, beResult),
+  judgePrompt(channelId, feResult, beResult, observerResult, verify),
   { label: 'judge', model: 'haiku', schema: JUDGE_SCHEMA }
 )
 
@@ -285,22 +342,25 @@ judgeResult?.friction_points?.forEach(fp =>
   log(`  [${fp.severity}] ${fp.agent}/${fp.phase}: ${fp.issue}`)
 )
 
-// Write friction log entry
+// Append the run to the friction log (one JSON line)
 const logEntry = {
+  version: 2,
   channel_id: channelId,
   fe: feResult,
   be: beResult,
+  transcript: observerResult?.transcript ?? [],
+  verify,
   judge: judgeResult,
 }
 
 await agent(
-  `Append exactly this JSON line (no newlines inside, one trailing newline) to ${LOG_FILE}.
-Create the file if it doesn't exist.
-Use this bash command:
-  printf '%s\\n' '${JSON.stringify(logEntry).replace(/\\/g, '\\\\').replace(/'/g, "'\\''")}' >> ${LOG_FILE}
-
-Then run: tail -1 ${LOG_FILE} | python3 -c "import json,sys; json.load(sys.stdin); print('log entry valid')"
-Return "ok" if it worked, or the error message if it failed.`,
+  `Append exactly this one JSON line (then a newline) to ${LOG_FILE}; create the file if absent.
+Run this bash, with the JSON passed via stdin to avoid quoting issues:
+  cat > /tmp/botbus-e2e-entry.json <<'BOTBUS_EOF'
+${JSON.stringify(logEntry)}
+BOTBUS_EOF
+  python3 -c "import json; d=json.load(open('/tmp/botbus-e2e-entry.json')); open('${LOG_FILE}','a').write(json.dumps(d)+'\\n'); print('ok')"
+Return python's output ("ok") or the error.`,
   { label: 'write-log', model: 'haiku' }
 )
 

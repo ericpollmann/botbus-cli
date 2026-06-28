@@ -39,24 +39,30 @@ if (scores.length > 1) {
 const successes = runs.filter(r => r.judge?.success).length
 console.log(`\nSuccess rate: ${successes}/${runs.length} (${Math.round(100*successes/runs.length)}%)`)
 
-// File production rates
-const feOk = runs.filter(r => r.judge?.fe_file_ok).length
-const beOk = runs.filter(r => r.judge?.be_file_ok).length
-const coordOk = runs.filter(r => r.judge?.coordination_ok).length
-console.log(`FE file ok:        ${feOk}/${runs.length}`)
-console.log(`BE file ok:        ${beOk}/${runs.length}`)
-console.log(`Coordination ok:   ${coordOk}/${runs.length}`)
+// Integration verification rates (v2 — the honest signal)
+const pct = n => `${n}/${runs.length} (${Math.round(100*n/runs.length)}%)`
+const beBoots  = runs.filter(r => r.verify?.be_boots).length
+const getOk    = runs.filter(r => r.verify?.get_ok).length
+const postOk   = runs.filter(r => r.verify?.post_ok).length
+const portMatch= runs.filter(r => r.verify?.port_match).length
+const feOk     = runs.filter(r => r.verify?.fe_ok ?? r.judge?.fe_file_ok).length
+console.log('\nIntegration verification (does the product actually work?):')
+console.log(`  BE server boots:   ${pct(beBoots)}`)
+console.log(`  GET /api/count:    ${pct(getOk)}`)
+console.log(`  POST increments:   ${pct(postOk)}`)
+console.log(`  FE file ok:        ${pct(feOk)}`)
+console.log(`  FE↔BE port match:  ${pct(portMatch)}   <- the live-coordination payoff`)
 
-// Agent-level stats
-const feSubscribed = runs.filter(r => r.fe?.subscribed).length
-const feTask = runs.filter(r => r.fe?.task_received).length
-const feFile = runs.filter(r => r.fe?.file_written).length
-const beSubscribed = runs.filter(r => r.be?.subscribed).length
-const beTask = runs.filter(r => r.be?.task_received).length
-const beFile = runs.filter(r => r.be?.file_written).length
-console.log('\nAgent self-reports:')
-console.log(`  FE: subscribed ${feSubscribed}/${runs.length}  task ${feTask}/${runs.length}  file ${feFile}/${runs.length}`)
-console.log(`  BE: subscribed ${beSubscribed}/${runs.length}  task ${beTask}/${runs.length}  file ${beFile}/${runs.length}`)
+// Coordination: did the observer actually see both agents talk?
+const sawBeReady = runs.filter(r => (r.transcript ?? []).some(m => /be-ready/i.test(m))).length
+const sawFeReady = runs.filter(r => (r.transcript ?? []).some(m => /fe-ready/i.test(m))).length
+const fePeerHeard = runs.filter(r => r.fe?.peer_heard).length
+const bePeerHeard = runs.filter(r => r.be?.peer_heard).length
+console.log('\nLive coordination (from the observer transcript):')
+console.log(`  transcript shows be-ready:  ${pct(sawBeReady)}`)
+console.log(`  transcript shows fe-ready:  ${pct(sawFeReady)}`)
+console.log(`  FE reports hearing BE:      ${pct(fePeerHeard)}`)
+console.log(`  BE reports hearing FE:      ${pct(bePeerHeard)}`)
 
 // Friction point frequency
 const counts = {}
