@@ -1,7 +1,7 @@
 package main
 
 // ui.go — bubbletea model + Init/Update/View for the interactive chat TUI.
-// Pure rendering helpers (palette, nameColor, parseMsg, renderSlash,
+// Pure rendering helpers (palette, nameColor, parseMsgWithID, renderSlash,
 // visualRows) live in protocol.go.
 
 import (

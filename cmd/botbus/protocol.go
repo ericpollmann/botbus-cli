@@ -42,15 +42,6 @@ func nameColor(name string) int {
 	return sum & 0x1F
 }
 
-// parseMsg splits "name: body" into (name, body, true). Bytes without that
-// shape return ("", text, false). The " [id xxx]" suffix (if present) is
-// stripped from body before parsing — callers that need the ID should use
-// parseMsgWithID instead.
-func parseMsg(b []byte) (name, body string, named bool) {
-	name, body, _, named = parseMsgWithID(b)
-	return
-}
-
 // parseMsgWithID splits "name: body [id xxx]" into (name, body, id, true).
 // The id is the Crockford base32 token from the server-stamped suffix, or ""
 // if absent. Frames without a "name: " prefix return ("", text, "", false).
