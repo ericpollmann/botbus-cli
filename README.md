@@ -225,12 +225,50 @@ Multiple hosts can share one e2e workspace. Trust follows the agent hierarchy:
   re-wrapped to the current anchors only; a removed anchor never receives the
   new epoch's key and its messages stop resolving to an anchor.
 
-Status: the cross-host **protocol** (cert chains, trust graph, admission codec,
+The cross-host **protocol** (cert chains, trust graph, admission codec,
 admit/join/rotate/remove methods, cert + anchor distribution over the roster
 channel) is implemented and covered by two-host convergence/relay-blind tests.
-The user-facing CLI subcommands (`workspace join`/`pending`/`admit`/`key
-rotate`/`remove`) and the runtime subscribe loops that auto-ingest roster/
-waiting-room frames are the remaining wiring on top of this protocol layer.
+The CLI subcommands and runtime subscribe loops are now shipped:
+
+**Cross-host CLI commands:**
+
+```
+botbus workspace join <url|handle>
+```
+Joiner posts a request to a workspace's waiting room, prints a SAS code to
+confirm out-of-band, waits for the admin's grant, then adopts the workspace key.
+
+```
+botbus workspace pending [--workspace <name>]
+```
+Admin lists pending join requests with their SAS fingerprints.
+
+```
+botbus workspace admit <reqId> [--workspace <name>]
+```
+Admin admits a pending request (wraps the workspace key to the joiner, publishes
+an admin-signed grant). Does **not** rotate the key.
+
+```
+botbus workspace key-rotate [--workspace <name>]
+```
+Admin rolls a fresh key to a new epoch, re-wrapped to all current anchors.
+
+```
+botbus workspace remove <anchorId> [--workspace <name>]
+```
+Admin evicts an anchor and rotates (the removed anchor never receives the new key).
+
+**Runtime subscribe loops:** the roster loop and waiting-room loop run inside
+`botbus daemon` and auto-ingest cert/anchor-set updates and rekeys (roster),
+and join requests on the admin host (waiting room). Remote hosts adopt key
+changes automatically via the roster loop.
+
+**Limitation:** after running a one-shot admin command (`key-rotate`, `remove`,
+or `admit`) on the **admin's own** host, restart that host's `botbus daemon` so
+its in-memory key and anchor set picks up the change. Remote hosts adopt
+automatically via the roster loop. Same-host daemon auto-reload is a documented
+follow-up.
 
 **Known limitations (v1):**
 
