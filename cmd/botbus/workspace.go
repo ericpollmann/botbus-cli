@@ -197,6 +197,73 @@ func workspacePending(statePath, wsName string) (string, error) {
 	return out, nil
 }
 
+// workspaceAdmit admits a pending join request identified by reqID in the
+// active (or named) workspace. It reconstructs an in-process daemon, hydrates
+// the trust graph, calls AdmitJoinRequest, removes the request from Pending,
+// and saves state.
+func workspaceAdmit(ctx context.Context, d hostagent.Deps, wsName, reqID string) error {
+	st, err := agentstate.Load(d.StatePath)
+	if err != nil {
+		return fmt.Errorf("load state: %w", err)
+	}
+	rootID := st.ActiveWorkspace
+	if wsName != "" {
+		root, ok, err := hostagent.GetByName(d.StatePath, wsName)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("no workspace named %q — create it first", wsName)
+		}
+		rootID = root.ID
+	}
+	var ws *agentstate.Workspace
+	for i := range st.Workspaces {
+		if st.Workspaces[i].RootID == rootID {
+			ws = &st.Workspaces[i]
+			break
+		}
+	}
+	if ws == nil {
+		return fmt.Errorf("no e2e workspace for root %q", rootID)
+	}
+	// Find the pending request.
+	var pending *agentstate.PendingJoin
+	for i := range ws.Pending {
+		if ws.Pending[i].ReqID == reqID {
+			pending = &ws.Pending[i]
+			break
+		}
+	}
+	if pending == nil {
+		return fmt.Errorf("no pending request with id %q", reqID)
+	}
+	dm := daemon.NewRuntime(daemon.Config{State: st, StatePath: d.StatePath, Hub: d.Hub})
+	dm.HydrateWorkspaceTrust(ws)
+	req := daemon.JoinRequest{
+		ReqID:        pending.ReqID,
+		Name:         pending.Name,
+		ParentIntent: pending.ParentIntent,
+		SignPub:      pending.SignPub,
+		EncPub:       pending.EncPub,
+	}
+	if _, err := dm.AdmitJoinRequest(ctx, ws, req); err != nil {
+		return fmt.Errorf("admit: %w", err)
+	}
+	// Remove the admitted entry from Pending (in-place filter).
+	filtered := ws.Pending[:0]
+	for _, p := range ws.Pending {
+		if p.ReqID != reqID {
+			filtered = append(filtered, p)
+		}
+	}
+	ws.Pending = filtered
+	if err := agentstate.Save(d.StatePath, st); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+	return nil
+}
+
 // workspaceCmd handles `botbus workspace <sub> [args/flags]`.
 func workspaceCmd(args []string) {
 	if len(args) < 1 {
@@ -307,6 +374,35 @@ func workspaceCmd(args []string) {
 		} else {
 			fmt.Print(out)
 		}
+	case "admit":
+		// Parse: admit <reqId> [--workspace <name>]
+		fs := flag.NewFlagSet("workspace admit", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		wsp := fs.String("workspace", "", "workspace name (default: active workspace)")
+		var positionals []string
+		rest := args[1:]
+		for {
+			if err := fs.Parse(rest); err != nil {
+				workspaceUsage()
+				os.Exit(2)
+			}
+			rest = fs.Args()
+			if len(rest) == 0 {
+				break
+			}
+			positionals = append(positionals, rest[0])
+			rest = rest[1:]
+		}
+		if len(positionals) != 1 || positionals[0] == "" {
+			workspaceUsage()
+			os.Exit(2)
+		}
+		reqID := positionals[0]
+		if err := workspaceAdmit(ctx, realDeps(), *wsp, reqID); err != nil {
+			fmt.Fprintln(os.Stderr, "admit:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("admitted %s\n", reqID)
 	default:
 		workspaceUsage()
 		os.Exit(2)
@@ -314,5 +410,5 @@ func workspaceCmd(args []string) {
 }
 
 func workspaceUsage() {
-	fmt.Fprintln(os.Stderr, "usage: botbus workspace <create <name> [--e2e]|invite <user> --workspace <name>|use <name>|list|pending [--workspace <name>]>")
+	fmt.Fprintln(os.Stderr, "usage: botbus workspace <create <name> [--e2e]|invite <user> --workspace <name>|use <name>|list|pending [--workspace <name>]|admit <reqId> [--workspace <name>]>")
 }

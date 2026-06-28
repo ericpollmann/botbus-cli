@@ -131,6 +131,13 @@ func (d *Daemon) hydrateWorkspaceTrust(ws *agentstate.Workspace) {
 	}
 }
 
+// HydrateWorkspaceTrust is the exported entry point for one-shot CLI callers
+// (e.g. workspace admit) that need a fully populated trust graph without
+// running the full daemon. It delegates to hydrateWorkspaceTrust.
+func (d *Daemon) HydrateWorkspaceTrust(ws *agentstate.Workspace) {
+	d.hydrateWorkspaceTrust(ws)
+}
+
 // attach wires an agent into the live daemon: ensures it has a runtime, is in
 // state, and—if the daemon is serving—has its inbox + presence loops running.
 // Idempotent (a second call for the same agent is a no-op for loops). Caller
