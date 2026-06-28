@@ -87,7 +87,11 @@ type model struct {
 	myName     string
 	state      connState
 	spinIdx    int
-	msgs       []string
+	msgs       []string          // rendered chat lines (base + reaction badges)
+	msgBases   []string          // base rendered string for each msgs entry (no badges)
+	msgIDs     []string          // server-assigned crockford ID per msgs entry ("" if none)
+	idxByMsgID map[string]int    // crockford id → index in msgs/msgBases
+	reactions  map[string]map[string][]string // msgID → emoji → []reactorName
 	seenColors map[int]time.Time // palette idx → lastSeen
 	input      textarea.Model
 	recv       <-chan []byte
@@ -213,6 +217,8 @@ func newModel(host, histBase, myName string, fresh bool, recv <-chan []byte, sta
 		host: host, histBase: histBase, myName: myName, state: stConnecting, input: ta,
 		recv: recv, states: states, send: send, seed: seed,
 		seenColors: map[int]time.Time{},
+		idxByMsgID: map[string]int{},
+		reactions:  map[string]map[string][]string{},
 		welcome:    welcomeState{visible: autoShow, fresh: fresh},
 		// Direct single-channel chat (botbus <channel>): run in chat mode so the
 		// mode zero-value (modeRoster) doesn't divert the existing entrypoint
@@ -223,28 +229,95 @@ func newModel(host, histBase, myName string, fresh bool, recv <-chan []byte, sta
 
 // appendSpoken renders an incoming or outgoing line into the scrollback,
 // dispatching /me and /dm to renderSlash. color is the speaker's palette
-// index; raw is the full "name: body" string used as the plain fallback.
-func (m *model) appendSpoken(name, body, raw string) {
+// index; raw is the full "name: body [id xxx]" wire string. The ID suffix
+// is extracted, stripped from display, and tracked so reactions can update
+// the rendered line in-place.
+func (m *model) appendSpoken(name, body, raw string, id string) {
 	color := nameColor(name)
+	var base string
 	if rendered, ok := renderSlash(name, body, color); ok {
-		m.msgs = append(m.msgs, rendered)
-		return
+		base = rendered
+	} else {
+		// Strip ID suffix from the raw string for display.
+		display := stripMsgIDString(raw)
+		base = paletteStyle(color).Render(display)
 	}
-	m.msgs = append(m.msgs, paletteStyle(color).Render(raw))
+	idx := len(m.msgs)
+	m.msgs = append(m.msgs, base)
+	m.msgBases = append(m.msgBases, base)
+	m.msgIDs = append(m.msgIDs, id)
+	if id != "" {
+		m.idxByMsgID[id] = idx
+	}
+}
+
+// applyReaction updates the reaction state for a given message ID and
+// re-renders that message line with the current reaction badges.
+func (m *model) applyReaction(reactorName, emoji, refID string) {
+	idx, ok := m.idxByMsgID[refID]
+	if !ok {
+		return // referenced message not in scrollback; silently ignore
+	}
+	if m.reactions[refID] == nil {
+		m.reactions[refID] = map[string][]string{}
+	}
+	names := m.reactions[refID][emoji]
+	// Toggle: remove if already reacted, add otherwise.
+	found := false
+	for i, n := range names {
+		if n == reactorName {
+			m.reactions[refID][emoji] = append(names[:i], names[i+1:]...)
+			found = true
+			break
+		}
+	}
+	if !found {
+		m.reactions[refID][emoji] = append(m.reactions[refID][emoji], reactorName)
+	}
+	// Re-render the message line with updated badges.
+	m.msgs[idx] = m.msgBases[idx] + renderReactionBadges(m.reactions[refID])
+}
+
+// renderReactionBadges formats a map of emoji→[]names as a compact badge
+// string appended to the message line. Empty map returns "".
+func renderReactionBadges(r map[string][]string) string {
+	if len(r) == 0 {
+		return ""
+	}
+	// Collect and sort emoji for stable output.
+	emojis := make([]string, 0, len(r))
+	for e := range r {
+		if len(r[e]) > 0 {
+			emojis = append(emojis, e)
+		}
+	}
+	sort.Strings(emojis)
+	var b strings.Builder
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	for _, e := range emojis {
+		names := r[e]
+		if len(names) == 0 {
+			continue
+		}
+		b.WriteString(" ")
+		b.WriteString(style.Render(fmt.Sprintf("%s×%d", e, len(names))))
+	}
+	return b.String()
 }
 
 // renderHistFrame renders one raw history frame into a scrollback string
 // (slash-aware), WITHOUT touching peer dots — history isn't live presence.
+// The " [id xxx]" suffix is stripped from display.
 func renderHistFrame(raw []byte) string {
-	name, body, named := parseMsg(raw)
+	name, body, _, named := parseMsgWithID(raw)
 	if !named {
-		return string(raw)
+		return stripMsgIDString(string(raw))
 	}
 	color := nameColor(name)
 	if r, ok := renderSlash(name, body, color); ok {
 		return r
 	}
-	return paletteStyle(color).Render(string(raw))
+	return paletteStyle(color).Render(stripMsgIDString(string(raw)))
 }
 
 // effWH returns the render width/height with the same fallbacks View uses, so
@@ -514,6 +587,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = modeRoster
 		// Clear the chat scrollback so the next dip starts fresh.
 		m.msgs = nil
+		m.msgBases = nil
+		m.msgIDs = nil
+		m.idxByMsgID = map[string]int{}
+		m.reactions = map[string]map[string][]string{}
 		m.scrollOff = 0
 		return m, nil
 	}
@@ -582,7 +659,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Show our own line locally exactly as peers will see it
 			// (slash-aware rendering), and snap to the bottom so we always
 			// see what we just sent even if we were scrolled up in history.
-			m.appendSpoken(m.myName, text, m.myName+": "+text)
+			// Our own messages don't have server-assigned IDs yet (they
+			// arrive back as broadcasts with IDs, but we don't echo to self).
+			m.appendSpoken(m.myName, text, m.myName+": "+text, "")
 			m.scrollOff = 0
 			return m, m.publish(text)
 		}
@@ -592,18 +671,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.epoch != m.epoch {
 			return m, nil
 		}
-		name, body, named := parseMsg(msg.data)
+		name, body, id, named := parseMsgWithID(msg.data)
 		text := string(msg.data)
+		prevLen := len(m.msgs)
 		if named {
 			m.seenColors[nameColor(name)] = time.Now()
-			m.appendSpoken(name, body, text)
+			// Intercept reaction messages: render as badge on the referenced
+			// message rather than as a new chat line.
+			if emoji, refID, isReaction := parseReaction(body); isReaction {
+				m.applyReaction(name, emoji, refID)
+			} else {
+				m.appendSpoken(name, body, text, id)
+			}
 		} else {
-			m.msgs = append(m.msgs, text)
+			m.msgs = append(m.msgs, stripMsgIDString(text))
+			m.msgBases = append(m.msgBases, stripMsgIDString(text))
+			m.msgIDs = append(m.msgIDs, id)
 		}
 		// If the user is scrolled up reading history, keep their view anchored
 		// (grow the offset by the new line's rows) rather than yanking them to
 		// the bottom. At the bottom (scrollOff==0) the new line just shows.
-		if m.scrollOff > 0 {
+		// Only adjust if a new line was actually appended (reactions don't add lines).
+		if m.scrollOff > 0 && len(m.msgs) > prevLen {
 			w, _ := m.effWH()
 			m.scrollOff += rowsOf(m.msgs[len(m.msgs)-1], w)
 		}
@@ -642,8 +731,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			rendered = append(rendered, s)
 			added += rowsOf(s, w)
 		}
-		m.msgs = append(rendered, m.msgs...) // prepend older messages above
-		m.scrollOff += added                 // keep the viewport anchored on the same content
+		// Prepend older messages; re-index idxByMsgID to account for the shift.
+		offset := len(rendered)
+		for id, idx := range m.idxByMsgID {
+			m.idxByMsgID[id] = idx + offset
+		}
+		bases := make([]string, len(rendered))
+		copy(bases, rendered)
+		ids := make([]string, len(rendered)) // history frames don't carry live IDs for reaction lookup
+		m.msgs = append(rendered, m.msgs...)
+		m.msgBases = append(bases, m.msgBases...)
+		m.msgIDs = append(ids, m.msgIDs...)
+		m.scrollOff += added // keep the viewport anchored on the same content
 		if msg.next != "" {
 			m.oldestID = msg.next
 		} else {

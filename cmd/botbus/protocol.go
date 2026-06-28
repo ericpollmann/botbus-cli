@@ -43,13 +43,63 @@ func nameColor(name string) int {
 }
 
 // parseMsg splits "name: body" into (name, body, true). Bytes without that
-// shape return ("", text, false).
+// shape return ("", text, false). The " [id xxx]" suffix (if present) is
+// stripped from body before parsing — callers that need the ID should use
+// parseMsgWithID instead.
 func parseMsg(b []byte) (name, body string, named bool) {
-	s := string(b)
+	name, body, _, named = parseMsgWithID(b)
+	return
+}
+
+// parseMsgWithID splits "name: body [id xxx]" into (name, body, id, true).
+// The id is the Crockford base32 token from the server-stamped suffix, or ""
+// if absent. Frames without a "name: " prefix return ("", text, "", false).
+func parseMsgWithID(b []byte) (name, body, id string, named bool) {
+	s := stripMsgIDString(string(b))
+	rawID := extractMsgID(string(b))
 	if i := strings.Index(s, ": "); i > 0 {
-		return s[:i], s[i+2:], true
+		return s[:i], s[i+2:], rawID, true
 	}
-	return "", s, false
+	return "", s, rawID, false
+}
+
+// extractMsgID returns the Crockford base32 token from a " [id xxx]" suffix,
+// or "" if not present.
+func extractMsgID(s string) string {
+	i := strings.LastIndex(s, " [id ")
+	if i < 0 || s[len(s)-1] != ']' {
+		return ""
+	}
+	return s[i+5 : len(s)-1]
+}
+
+// stripMsgIDString removes the " [id xxx]" suffix from a string.
+func stripMsgIDString(s string) string {
+	i := strings.LastIndex(s, " [id ")
+	if i < 0 || s[len(s)-1] != ']' {
+		return s
+	}
+	return s[:i]
+}
+
+// parseReaction checks if body (from a "name: body" message) is a reaction:
+// "reacted <emoji> to <id>". Returns (emoji, refID, true) on match.
+func parseReaction(body string) (emoji, refID string, ok bool) {
+	rest, cut := strings.CutPrefix(body, "reacted ")
+	if !cut {
+		return "", "", false
+	}
+	// rest = "<emoji> to <id>"
+	toIdx := strings.LastIndex(rest, " to ")
+	if toIdx < 0 {
+		return "", "", false
+	}
+	emoji = strings.TrimSpace(rest[:toIdx])
+	refID = strings.TrimSpace(rest[toIdx+4:])
+	if emoji == "" || refID == "" {
+		return "", "", false
+	}
+	return emoji, refID, true
 }
 
 // visualRows reports the total number of rendered terminal rows the given

@@ -69,7 +69,7 @@ func runMonitor(ctx context.Context, recv, audio <-chan []byte, states <-chan co
 			if !ok {
 				return
 			}
-			from, body, named := parseMsg(m)
+			from, body, _, named := parseMsgWithID(m)
 			if !named {
 				continue // raw, non-protocol — agents only act on "name: body"
 			}
