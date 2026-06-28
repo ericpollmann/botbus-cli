@@ -10,16 +10,20 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
+	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
 	"github.com/ericpollmann/botbus-cli/fabric/daemon"
 	"github.com/ericpollmann/botbus-cli/fabric/hostagent"
+	"golang.org/x/crypto/nacl/box"
 )
 
 // workspaceCreate mints the org-root anchor for a workspace: an agent with no
@@ -344,6 +348,116 @@ func workspaceAdmit(ctx context.Context, d hostagent.Deps, wsName, reqID string)
 	return nil
 }
 
+// workspaceJoin joins an existing e2e workspace by posting a JoinRequest to the
+// waiting-room channel and awaiting a matching AdmitGrant. target is either a
+// bare waiting-room channel handle or a URL — the channel id is extracted from
+// the host subdomain or the first path component. name is the human name for
+// the new local anchor agent. Uses TOFU on first contact (expectedAdminPub == nil).
+func workspaceJoin(ctx context.Context, d hostagent.Deps, target, name string) error {
+	wroom := resolveWaitingRoom(target)
+
+	// Mint keypairs inline (hostagent internals are unexported).
+	_, signPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return fmt.Errorf("generate sign key: %w", err)
+	}
+	signPub := ed25519.PublicKey(signPriv.Public().(ed25519.PublicKey))
+	encPub, encPriv, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		return fmt.Errorf("generate enc key: %w", err)
+	}
+
+	agentID := d.MintKey()
+
+	// Subscribe BEFORE publishing so we don't miss the grant.
+	joinCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	frames, err := d.Hub.Subscribe(joinCtx, wroom, "")
+	if err != nil {
+		return fmt.Errorf("subscribe to waiting room: %w", err)
+	}
+
+	jb, err := daemon.JoinRequest{
+		ReqID:   agentID,
+		Name:    name,
+		SignPub: []byte(signPub),
+		EncPub:  encPub[:],
+	}.Marshal()
+	if err != nil {
+		return fmt.Errorf("marshal join request: %w", err)
+	}
+	if err := d.Hub.Publish(joinCtx, wroom, string(jb)); err != nil {
+		return fmt.Errorf("publish join request: %w", err)
+	}
+
+	sas := daemon.SASFingerprint([]byte(signPub), encPub[:])
+	fmt.Printf("join request sent\n  reqId: %s\n  SAS:   %s\n  (share the SAS with the admin to confirm)\n", agentID, sas)
+
+	for {
+		select {
+		case <-joinCtx.Done():
+			return fmt.Errorf("no admit grant received — ask the admin to run 'workspace admit %s'", agentID)
+		case fr, ok := <-frames:
+			if !ok {
+				return fmt.Errorf("no admit grant received — ask the admin to run 'workspace admit %s'", agentID)
+			}
+			var grant daemon.AdmitGrant
+			if err := json.Unmarshal([]byte(fr.Body), &grant); err != nil {
+				continue
+			}
+			if grant.ReqID != agentID {
+				continue
+			}
+			if len(grant.Sig) == 0 || len(grant.WrappedKey) == 0 {
+				continue
+			}
+			ws, _, adoptOK := daemon.ProcessAdmitGrant(grant, encPriv[:], nil)
+			if !adoptOK {
+				return fmt.Errorf("received grant for %s but ProcessAdmitGrant failed (bad signature or key)", agentID)
+			}
+
+			s, err := agentstate.Load(d.StatePath)
+			if err != nil {
+				return fmt.Errorf("load state: %w", err)
+			}
+			inbox, err := d.Hub.MintChannel(joinCtx)
+			if err != nil {
+				return fmt.Errorf("mint inbox channel: %w", err)
+			}
+			s.Upsert(agentstate.Agent{
+				ID:           agentID,
+				Key:          d.MintKey(),
+				Name:         name,
+				InboxChannel: inbox,
+				SignSeed:     signPriv.Seed(),
+				EncPriv:      encPriv[:],
+			})
+			s.Workspaces = append(s.Workspaces, *ws)
+			s.ActiveWorkspace = ws.RootID
+			if err := agentstate.Save(d.StatePath, s); err != nil {
+				return fmt.Errorf("save state: %w", err)
+			}
+			fmt.Printf("joined workspace (root: %s)\n", ws.RootID)
+			return nil
+		}
+	}
+}
+
+// resolveWaitingRoom extracts the channel id from target, which may be a full
+// URL (https://<id>.<domain>/...) or a bare channel handle. Strips scheme,
+// takes the substring before the first '.' or '/', and falls back to target
+// unchanged if neither is present.
+func resolveWaitingRoom(target string) string {
+	if i := strings.Index(target, "://"); i >= 0 {
+		target = target[i+3:]
+	}
+	if i := strings.IndexAny(target, "./"); i >= 0 {
+		return target[:i]
+	}
+	return target
+}
+
 // workspaceCmd handles `botbus workspace <sub> [args/flags]`.
 func workspaceCmd(args []string) {
 	if len(args) < 1 {
@@ -454,6 +568,16 @@ func workspaceCmd(args []string) {
 		} else {
 			fmt.Print(out)
 		}
+	case "join":
+		// Parse: join <url|handle> <name>
+		if len(args) < 3 || args[1] == "" || args[2] == "" {
+			workspaceUsage()
+			os.Exit(2)
+		}
+		if err := workspaceJoin(ctx, realDeps(), args[1], args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, "join:", err)
+			os.Exit(1)
+		}
 	case "admit":
 		// Parse: admit <reqId> [--workspace <name>]
 		fs := flag.NewFlagSet("workspace admit", flag.ContinueOnError)
@@ -533,5 +657,5 @@ func workspaceCmd(args []string) {
 }
 
 func workspaceUsage() {
-	fmt.Fprintln(os.Stderr, "usage: botbus workspace <create <name> [--e2e]|invite <user> --workspace <name>|use <name>|list|pending [--workspace <name>]|admit <reqId> [--workspace <name>]|key-rotate [--workspace <name>]|remove <anchorId> [--workspace <name>]>")
+	fmt.Fprintln(os.Stderr, "usage: botbus workspace <create <name> [--e2e]|invite <user> --workspace <name>|use <name>|list|pending [--workspace <name>]|join <url|handle> <name>|admit <reqId> [--workspace <name>]|key-rotate [--workspace <name>]|remove <anchorId> [--workspace <name>]>")
 }

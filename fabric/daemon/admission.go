@@ -38,7 +38,7 @@ type AdmitGrant struct {
 	Sig         []byte `json:"sig,omitempty"`
 }
 
-// grantSignedPayload returns the canonical byte string that the admin signs
+// GrantSignedPayload returns the canonical byte string that the admin signs
 // when issuing an AdmitGrant. The Sig field itself is NOT included.
 //
 // Format: domain-tag + LP(ReqID) + LP(AnchorID) + LP(RootID) +
@@ -47,6 +47,8 @@ type AdmitGrant struct {
 //	LP(Roster) + LP(WaitingRoom)
 //
 // where LP(x) = uint32-LE len(x) followed by x.
+func GrantSignedPayload(g AdmitGrant) []byte { return grantSignedPayload(g) }
+
 func grantSignedPayload(g AdmitGrant) []byte {
 	lp := func(b []byte) []byte {
 		prefix := make([]byte, 4)
@@ -184,13 +186,27 @@ func (d *Daemon) AdmitJoinRequest(ctx context.Context, ws *agentstate.Workspace,
 	return grant, nil
 }
 
-// verifyGrant validates expectedAdminPub, the admin signature, and unwraps the
-// workspace key. Returns (key, true) only when all three succeed.
+// verifyGrant validates the admin-pub constraint, verifies the Ed25519
+// signature, and unwraps the workspace key.
+//
+// TOFU mode (expectedAdminPub == nil): the grant is verified against its own
+// AdminPub (which must be a valid 32-byte ed25519 key). Callers must pin the
+// returned Workspace.AdminPub after a successful TOFU verify.
+//
+// Pinned mode (expectedAdminPub != nil): grant.AdminPub must equal
+// expectedAdminPub exactly (used by ProcessRekey and subsequent admits).
+//
+// Ed25519 signature verification over grantSignedPayload runs in both modes.
 func verifyGrant(grant AdmitGrant, encPriv []byte, expectedAdminPub []byte) ([32]byte, bool) {
 	if len(encPriv) != 32 {
 		return [32]byte{}, false
 	}
-	if len(expectedAdminPub) == 0 || !bytes.Equal(grant.AdminPub, expectedAdminPub) {
+	switch {
+	case len(expectedAdminPub) == 0:
+		if len(grant.AdminPub) != ed25519.PublicKeySize {
+			return [32]byte{}, false
+		}
+	case !bytes.Equal(grant.AdminPub, expectedAdminPub):
 		return [32]byte{}, false
 	}
 	if !ed25519.Verify(ed25519.PublicKey(grant.AdminPub), grantSignedPayload(grant), grant.Sig) {
@@ -215,8 +231,10 @@ func ProcessRekey(grant AdmitGrant, encPriv []byte, expectedAdminPub []byte) (ke
 // populated Workspace. Returns (nil, [32]byte{}, false) on any failure.
 //
 // expectedAdminPub is the Ed25519 public key of the admin the joiner verified
-// out-of-band (e.g. via SAS fingerprint). The grant is rejected if AdminPub
-// doesn't match, or if the grant signature is invalid.
+// out-of-band (e.g. via SAS fingerprint). When nil (first contact / TOFU),
+// the grant is accepted and the admin key is pinned from grant.AdminPub.
+// Subsequent calls should pass the pinned key. The Ed25519 signature over
+// the grant payload is verified in both cases.
 func ProcessAdmitGrant(grant AdmitGrant, encPriv []byte, expectedAdminPub []byte) (*agentstate.Workspace, [32]byte, bool) {
 	key, ok := verifyGrant(grant, encPriv, expectedAdminPub)
 	if !ok {
