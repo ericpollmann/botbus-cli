@@ -221,29 +221,32 @@ func (d *Daemon) agentByKeyLocked(key string) (agentstate.Agent, bool) {
 	return agentstate.Agent{}, false
 }
 
-// reloadFromDisk additively merges agents present on disk but not in memory
-// (self-heals the cross-process case: another process onboarded an agent after
-// our boot snapshot). Never drops in-memory agents. No-op if statePath is empty.
-// Returns true if it added at least one agent.
-func (d *Daemon) reloadFromDisk() bool {
+// reloadFromDisk reconciles in-memory state with state.json: it additively
+// merges agents present on disk but not in memory (returning them so the caller
+// can attach them), and reconciles EXISTING workspaces' key/epoch/anchors/
+// pending in place (see reconcileWorkspacesLocked). Never drops in-memory agents
+// or workspaces and never writes to disk. No-op if statePath is empty. Returns
+// the agents newly added to memory (nil if none).
+func (d *Daemon) reloadFromDisk() []agentstate.Agent {
 	if d.statePath == "" {
-		return false
+		return nil
 	}
 	st, err := agentstate.Load(d.statePath)
 	if err != nil {
-		return false
+		return nil
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	added := false
+	var added []agentstate.Agent
 	for _, a := range st.Agents {
-		// Dedup by capability key (the routing identity) — that's what callers
-		// look up by. attach later dedups loop-startup by agent ID.
+		// Dedup by capability key (the routing identity). attach later dedups
+		// loop-startup by agent ID.
 		if _, known := d.agentByKeyLocked(a.Key); !known {
 			d.state.Agents = append(d.state.Agents, a)
-			added = true
+			added = append(added, a)
 		}
 	}
+	d.reconcileWorkspacesLocked(st.Workspaces)
 	return added
 }
 
@@ -259,7 +262,7 @@ func (d *Daemon) resolveHandler(key string) http.Handler {
 		return h
 	}
 	if !ok {
-		if d.reloadFromDisk() {
+		if len(d.reloadFromDisk()) > 0 {
 			d.mu.Lock()
 			a, ok = d.agentByKeyLocked(key)
 			d.mu.Unlock()
