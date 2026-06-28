@@ -136,18 +136,31 @@ found:
 	}
 
 	// Local agent must be present with ID == reqID and EncPriv set.
-	var ag *agentstate.Agent
-	for i := range st.Agents {
-		if st.Agents[i].ID == reqID {
-			ag = &st.Agents[i]
-			break
-		}
-	}
-	if ag == nil {
+	ag, ok := st.AgentByID(reqID)
+	if !ok {
 		t.Fatalf("local agent with ID %q not saved in state", reqID)
 	}
 	if len(ag.EncPriv) != 32 {
 		t.Fatalf("agent EncPriv length = %d, want 32", len(ag.EncPriv))
+	}
+
+	// Joiner agent must have Parent == grant.RootID so WorkspaceFor resolves.
+	if ag.Parent != grant.RootID {
+		t.Fatalf("joiner agent Parent = %q, want %q (grant.RootID)", ag.Parent, grant.RootID)
+	}
+
+	// Root placeholder must exist so WorkspaceRootID can walk the chain.
+	if _, ok := st.AgentByID(grant.RootID); !ok {
+		t.Fatalf("root placeholder agent %q not saved in state", grant.RootID)
+	}
+
+	// WorkspaceFor must resolve for the joiner agent.
+	resolvedWS, wsOK := st.WorkspaceFor(reqID)
+	if !wsOK {
+		t.Fatalf("WorkspaceFor(%q) returned not-found; joiner cannot resolve workspace", reqID)
+	}
+	if resolvedWS.RootID != grant.RootID {
+		t.Fatalf("WorkspaceFor(%q).RootID = %q, want %q", reqID, resolvedWS.RootID, grant.RootID)
 	}
 }
 

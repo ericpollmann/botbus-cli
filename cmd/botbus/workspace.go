@@ -425,10 +425,14 @@ func workspaceJoin(ctx context.Context, d hostagent.Deps, target, name string) e
 			if err != nil {
 				return fmt.Errorf("mint inbox channel: %w", err)
 			}
+			if _, ok := s.AgentByID(ws.RootID); !ok {
+				s.Upsert(agentstate.Agent{ID: ws.RootID})
+			}
 			s.Upsert(agentstate.Agent{
 				ID:           agentID,
 				Key:          d.MintKey(),
 				Name:         name,
+				Parent:       ws.RootID,
 				InboxChannel: inbox,
 				SignSeed:     signPriv.Seed(),
 				EncPriv:      encPriv[:],
