@@ -264,11 +264,22 @@ Admin evicts an anchor and rotates (the removed anchor never receives the new ke
 and join requests on the admin host (waiting room). Remote hosts adopt key
 changes automatically via the roster loop.
 
-**Limitation:** after running a one-shot admin command (`key-rotate`, `remove`,
-or `admit`) on the **admin's own** host, restart that host's `botbus daemon` so
-its in-memory key and anchor set picks up the change. Remote hosts adopt
-automatically via the roster loop. Same-host daemon auto-reload is a documented
-follow-up.
+#### Same-host live reload
+
+A one-shot admin command (`botbus workspace key-rotate` / `admit` / `remove`)
+writes the change to `state.json`. The running daemon on that same host adopts it
+**live**: a background watcher polls `state.json` (~2s) and, on change, reconciles
+the in-memory workspace key/epoch/anchors/pending in place and attaches any new
+local agent — **without restarting or re-subscribing any hub connection**. The
+inbox opener re-reads the workspace key per frame, so a rotation takes effect on
+the next inbound frame with no dropped subscription. Remote hosts adopt the same
+change via the encrypted roster channel as before.
+
+**Known limitation:** the live reload covers *existing* workspaces. A brand-new
+workspace created while the daemon is running (e.g. `workspace join` on a host
+that had none) is adopted only on the next daemon restart — appending a workspace
+at runtime would invalidate the pointers held by running loops, so it is
+deliberately deferred to restart.
 
 **Known limitations (v1):**
 

@@ -220,9 +220,13 @@ func rotateBackups(path string, current []byte) error {
 	return os.WriteFile(backupName(path, 0), current, 0o600)
 }
 
-// Clone returns a deep copy of the state. All slice fields are copied so
-// mutation of the clone's Agents/Workspaces does not affect the original and
-// vice-versa.
+// Clone returns a copy of the state with independent Agents and Workspaces
+// backing arrays — and independent per-workspace Key/Salt/AdminPub/AdminPriv/
+// Anchors/Pending slices — so structural mutation of one (append/Upsert, or
+// reassigning a workspace's fields) does not affect the other. Inner byte slices
+// of Agent (SignSeed/EncPriv) and of AnchorRef/PendingJoin elements (SignPub/
+// EncPub) are shared by element copy; they are set once and read-only thereafter,
+// so the sharing is safe. Do not mutate those bytes in place.
 func (s *State) Clone() *State {
 	c := *s
 	c.Agents = append([]Agent(nil), s.Agents...)
