@@ -38,16 +38,17 @@ type Daemon struct {
 	mintKey func() string
 	domain  string
 
-	mu        sync.Mutex                    // guards state.Agents, runtimes, handlers, cancels, serving, runCtx, ctl, counters, anchorEnc
-	handlers  map[string]http.Handler       // capability key -> cached streamable MCP handler
-	cancels   map[string]context.CancelFunc // agentID -> loop canceller (set only while serving)
-	runCtx    context.Context               // parent ctx for attached agents' loops (set in RunOn)
-	ctl       *control.Client               // resolved control client (set in RunOn)
-	serving   bool                          // true while RunOn is active
-	trust     *trustGraph
-	replay    *replayWindow
-	counters  map[string]uint64 // keyed by "deviceID|channelID|epoch"; lazy-init in nextCounter
-	anchorEnc map[string][]byte // anchorID -> X25519 enc pubkey; in-memory only (not persisted across restarts)
+	mu            sync.Mutex                    // guards state.Agents, runtimes, handlers, cancels, rosterCancels, wroomCancels, serving, runCtx, ctl, counters
+	handlers      map[string]http.Handler       // capability key -> cached streamable MCP handler
+	cancels       map[string]context.CancelFunc // agentID -> loop canceller (set only while serving)
+	rosterCancels map[string]context.CancelFunc // ws.RootID -> roster-loop canceller (set only while serving)
+	wroomCancels  map[string]context.CancelFunc // ws.RootID -> waiting-room-loop canceller (set only while serving; admin hosts only)
+	runCtx        context.Context               // parent ctx for attached agents' loops (set in RunOn)
+	ctl           *control.Client               // resolved control client (set in RunOn)
+	serving       bool                          // true while RunOn is active
+	trust         *trustGraph
+	replay        *replayWindow
+	counters      map[string]uint64 // keyed by "deviceID|channelID|epoch"; lazy-init in nextCounter
 }
 
 // Config is the full set of runtime collaborators.
@@ -70,11 +71,12 @@ func NewRuntime(c Config) *Daemon {
 	return &Daemon{
 		state: c.State, statePath: c.StatePath, hub: c.Hub, runtimes: rts,
 		control: c.Control, profile: c.Profile, mintKey: c.MintKey, domain: c.Domain,
-		handlers:  make(map[string]http.Handler),
-		cancels:   make(map[string]context.CancelFunc),
-		trust:     newTrustGraph(),
-		replay:    newReplayWindow(),
-		anchorEnc: make(map[string][]byte),
+		handlers:      make(map[string]http.Handler),
+		cancels:       make(map[string]context.CancelFunc),
+		rosterCancels: make(map[string]context.CancelFunc),
+		wroomCancels:  make(map[string]context.CancelFunc),
+		trust:         newTrustGraph(),
+		replay:        newReplayWindow(),
 	}
 }
 
@@ -110,6 +112,31 @@ func (d *Daemon) seedLocalTrust(a agentstate.Agent) {
 	}
 	parentPriv := ed25519.NewKeyFromSeed(parent.SignSeed)
 	d.trust.addCert(e2e.SignCert(parentPriv, a.ID, a.Parent, childPub))
+}
+
+// hydrateWorkspaceTrust rebuilds the in-memory trust graph for ws from persisted
+// state so a fresh process (one-shot CLI or restarted daemon) has the COMPLETE
+// anchor set: local agents (root → anchor, children → parent-signed certs) plus
+// every persisted remote anchor. Idempotent.
+func (d *Daemon) hydrateWorkspaceTrust(ws *agentstate.Workspace) {
+	for _, a := range d.state.Agents {
+		if d.state.WorkspaceRootID(a.ID) == ws.RootID {
+			d.seedLocalTrust(a)
+		}
+	}
+	for _, ar := range ws.Anchors {
+		// ed25519.SeedSize == ed25519.PublicKeySize == 32; the OR was always true for both.
+		if len(ar.SignPub) == ed25519.PublicKeySize {
+			d.trust.anchors.set(ar.ID, ed25519.PublicKey(ar.SignPub))
+		}
+	}
+}
+
+// HydrateWorkspaceTrust is the exported entry point for one-shot CLI callers
+// (e.g. workspace admit) that need a fully populated trust graph without
+// running the full daemon. It delegates to hydrateWorkspaceTrust.
+func (d *Daemon) HydrateWorkspaceTrust(ws *agentstate.Workspace) {
+	d.hydrateWorkspaceTrust(ws)
 }
 
 // attach wires an agent into the live daemon: ensures it has a runtime, is in
@@ -299,6 +326,38 @@ func (d *Daemon) RunOn(ctx context.Context, ln net.Listener) error {
 	for _, a := range initial {
 		d.attach(a)
 	}
+	// Start one runRoster (and, for admin hosts, one runWaitingRoom) per e2e workspace,
+	// deduped by ws.RootID.
+	for i := range d.state.Workspaces {
+		ws := &d.state.Workspaces[i] // take address of slice element, never loop-var copy
+		if !ws.E2E || ws.Roster == "" {
+			continue
+		}
+		d.mu.Lock()
+		_, already := d.rosterCancels[ws.RootID]
+		if !already {
+			rCtx, rCancel := context.WithCancel(gctx)
+			d.rosterCancels[ws.RootID] = rCancel
+			d.mu.Unlock()
+			d.hydrateWorkspaceTrust(ws)
+			go runRoster(rCtx, d, ws)
+		} else {
+			d.mu.Unlock()
+		}
+		// Admin hosts only: subscribe to the waiting room to record pending join requests.
+		if len(ws.AdminPriv) > 0 && ws.WaitingRoom != "" {
+			d.mu.Lock()
+			_, wrAlready := d.wroomCancels[ws.RootID]
+			if !wrAlready {
+				wrCtx, wrCancel := context.WithCancel(gctx)
+				d.wroomCancels[ws.RootID] = wrCancel
+				d.mu.Unlock()
+				go runWaitingRoom(wrCtx, d, ws)
+			} else {
+				d.mu.Unlock()
+			}
+		}
+	}
 	srv := &http.Server{Handler: d.mux()}
 	g.Go(func() error {
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
@@ -314,6 +373,23 @@ func (d *Daemon) RunOn(ctx context.Context, ln net.Listener) error {
 	d.serving = false
 	d.mu.Unlock()
 	return err
+}
+
+// persistWorkspaceKey best-effort saves ws's key/epoch to state.json after a
+// roster-ingested rotation or a new pending join. No-op when statePath is unset
+// (tests). Acquires d.mu around the marshal+write so concurrent applyRekey /
+// recordPending calls cannot race on d.state. Callers must NOT hold d.mu when
+// calling this function.
+func (d *Daemon) persistWorkspaceKey(ws *agentstate.Workspace) {
+	if d.statePath == "" {
+		return
+	}
+	d.mu.Lock()
+	err := agentstate.Save(d.statePath, d.state)
+	d.mu.Unlock()
+	if err != nil {
+		log.Printf("roster: persist workspace key: %v", err)
+	}
 }
 
 // Run binds Addr() itself, then delegates to RunOn (back-compat).

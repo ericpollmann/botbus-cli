@@ -38,7 +38,7 @@ type AdmitGrant struct {
 	Sig         []byte `json:"sig,omitempty"`
 }
 
-// grantSignedPayload returns the canonical byte string that the admin signs
+// GrantSignedPayload returns the canonical byte string that the admin signs
 // when issuing an AdmitGrant. The Sig field itself is NOT included.
 //
 // Format: domain-tag + LP(ReqID) + LP(AnchorID) + LP(RootID) +
@@ -47,6 +47,8 @@ type AdmitGrant struct {
 //	LP(Roster) + LP(WaitingRoom)
 //
 // where LP(x) = uint32-LE len(x) followed by x.
+func GrantSignedPayload(g AdmitGrant) []byte { return grantSignedPayload(g) }
+
 func grantSignedPayload(g AdmitGrant) []byte {
 	lp := func(b []byte) []byte {
 		prefix := make([]byte, 4)
@@ -132,17 +134,13 @@ func (d *Daemon) AdmitJoinRequest(ctx context.Context, ws *agentstate.Workspace,
 		return AdmitGrant{}, err
 	}
 
-	// Record the joiner's enc pubkey for future key rotation re-wraps.
-	// In-memory only: not persisted across restarts (see anchorEnc field comment).
+	// Record the joiner as a persisted anchor (source of truth for future rekeys).
 	if len(req.EncPub) == 32 {
-		d.mu.Lock()
-		if d.anchorEnc == nil {
-			d.anchorEnc = make(map[string][]byte)
-		}
-		enc := make([]byte, 32)
-		copy(enc, req.EncPub)
-		d.anchorEnc[req.ReqID] = enc
-		d.mu.Unlock()
+		ws.Anchors = upsertAnchor(ws.Anchors, agentstate.AnchorRef{
+			ID:      req.ReqID,
+			SignPub: append([]byte(nil), req.SignPub...),
+			EncPub:  append([]byte(nil), req.EncPub...),
+		})
 	}
 
 	// Publish anchor update to roster.
@@ -188,27 +186,57 @@ func (d *Daemon) AdmitJoinRequest(ctx context.Context, ws *agentstate.Workspace,
 	return grant, nil
 }
 
+// verifyGrant validates the admin-pub constraint, verifies the Ed25519
+// signature, and unwraps the workspace key.
+//
+// TOFU mode (expectedAdminPub == nil): the grant is verified against its own
+// AdminPub (which must be a valid 32-byte ed25519 key). Callers must pin the
+// returned Workspace.AdminPub after a successful TOFU verify.
+//
+// Pinned mode (expectedAdminPub != nil): grant.AdminPub must equal
+// expectedAdminPub exactly (used by ProcessRekey and subsequent admits).
+//
+// Ed25519 signature verification over grantSignedPayload runs in both modes.
+func verifyGrant(grant AdmitGrant, encPriv []byte, expectedAdminPub []byte) ([32]byte, bool) {
+	if len(encPriv) != 32 {
+		return [32]byte{}, false
+	}
+	switch {
+	case len(expectedAdminPub) == 0:
+		if len(grant.AdminPub) != ed25519.PublicKeySize {
+			return [32]byte{}, false
+		}
+	case !bytes.Equal(grant.AdminPub, expectedAdminPub):
+		return [32]byte{}, false
+	}
+	if !ed25519.Verify(ed25519.PublicKey(grant.AdminPub), grantSignedPayload(grant), grant.Sig) {
+		return [32]byte{}, false
+	}
+	var priv [32]byte
+	copy(priv[:], encPriv)
+	return unwrapKey(grant.WrappedKey, priv)
+}
+
+// ProcessRekey validates a signed rekey grant published on the roster and
+// returns the new workspace key + epoch for an existing member to adopt.
+func ProcessRekey(grant AdmitGrant, encPriv []byte, expectedAdminPub []byte) (key [32]byte, epoch uint32, ok bool) {
+	k, good := verifyGrant(grant, encPriv, expectedAdminPub)
+	if !good {
+		return [32]byte{}, 0, false
+	}
+	return k, grant.Epoch, true
+}
+
 // ProcessAdmitGrant unwraps the workspace key from the grant and returns a
 // populated Workspace. Returns (nil, [32]byte{}, false) on any failure.
 //
 // expectedAdminPub is the Ed25519 public key of the admin the joiner verified
-// out-of-band (e.g. via SAS fingerprint). The grant is rejected if AdminPub
-// doesn't match, or if the grant signature is invalid.
+// out-of-band (e.g. via SAS fingerprint). When nil (first contact / TOFU),
+// the grant is accepted and the admin key is pinned from grant.AdminPub.
+// Subsequent calls should pass the pinned key. The Ed25519 signature over
+// the grant payload is verified in both cases.
 func ProcessAdmitGrant(grant AdmitGrant, encPriv []byte, expectedAdminPub []byte) (*agentstate.Workspace, [32]byte, bool) {
-	if len(encPriv) != 32 {
-		return nil, [32]byte{}, false
-	}
-	// Reject if expectedAdminPub is absent or doesn't match the grant's AdminPub.
-	if len(expectedAdminPub) == 0 || !bytes.Equal(grant.AdminPub, expectedAdminPub) {
-		return nil, [32]byte{}, false
-	}
-	// Verify the admin signed this grant (authenticates the sealed box).
-	if !ed25519.Verify(ed25519.PublicKey(grant.AdminPub), grantSignedPayload(grant), grant.Sig) {
-		return nil, [32]byte{}, false
-	}
-	var priv [32]byte
-	copy(priv[:], encPriv)
-	key, ok := unwrapKey(grant.WrappedKey, priv)
+	key, ok := verifyGrant(grant, encPriv, expectedAdminPub)
 	if !ok {
 		return nil, [32]byte{}, false
 	}
@@ -224,11 +252,22 @@ func ProcessAdmitGrant(grant AdmitGrant, encPriv []byte, expectedAdminPub []byte
 	return ws, key, true
 }
 
-// sasFingerprint returns a short human-comparable string derived from
+// upsertAnchor replaces the entry with the same ID in list, or appends it.
+func upsertAnchor(list []agentstate.AnchorRef, a agentstate.AnchorRef) []agentstate.AnchorRef {
+	for i := range list {
+		if list[i].ID == a.ID {
+			list[i] = a
+			return list
+		}
+	}
+	return append(list, a)
+}
+
+// SASFingerprint returns a short human-comparable string derived from
 // sha256(signPub || encPub). The first 60 bits of the hash are encoded as
 // Crockford base32 and formatted as "XXXX-XXXX-XXXX" (14 chars total) for
 // out-of-band verification during the admission flow.
-func sasFingerprint(signPub, encPub []byte) string {
+func SASFingerprint(signPub, encPub []byte) string {
 	const crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 	h := sha256.New()
 	h.Write(signPub)

@@ -291,8 +291,12 @@ func TestProcessAdmitGrantRejectsForgedGrant(t *testing.T) {
 		t.Fatal("(c) wrong expectedAdminPub must be rejected")
 	}
 
-	// (c2) Empty expectedAdminPub → rejected.
-	if _, _, ok := ProcessAdmitGrant(grant, joinerEncPriv[:], nil); ok {
-		t.Fatal("(c2) empty expectedAdminPub must be rejected")
+	// (c2) Nil expectedAdminPub → TOFU mode: valid grant is accepted, AdminPub pinned.
+	ws2, _, ok2 := ProcessAdmitGrant(grant, joinerEncPriv[:], nil)
+	if !ok2 {
+		t.Fatal("(c2) nil expectedAdminPub (TOFU) must accept a valid grant")
+	}
+	if !bytes.Equal(ws2.AdminPub, []byte(adminPub)) {
+		t.Fatalf("(c2) TOFU: AdminPub not pinned: got %x want %x", ws2.AdminPub, []byte(adminPub))
 	}
 }

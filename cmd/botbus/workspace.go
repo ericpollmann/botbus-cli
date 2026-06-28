@@ -10,15 +10,20 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
+	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
+	"github.com/ericpollmann/botbus-cli/fabric/daemon"
 	"github.com/ericpollmann/botbus-cli/fabric/hostagent"
+	"golang.org/x/crypto/nacl/box"
 )
 
 // workspaceCreate mints the org-root anchor for a workspace: an agent with no
@@ -156,6 +161,316 @@ func workspaceUse(statePath, name string) error {
 	return setActiveWorkspace(statePath, root.ID)
 }
 
+// workspacePending loads the state file, resolves the active (or named)
+// workspace, and returns one formatted line per pending join request:
+// "<reqId>  <name>  <SAS>  <parentIntent>". wsName == "" ⇒ active workspace.
+func workspacePending(statePath, wsName string) (string, error) {
+	s, err := agentstate.Load(statePath)
+	if err != nil {
+		return "", fmt.Errorf("load state: %w", err)
+	}
+	rootID := s.ActiveWorkspace
+	if wsName != "" {
+		root, ok, err := hostagent.GetByName(statePath, wsName)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", fmt.Errorf("no workspace named %q — create it first", wsName)
+		}
+		rootID = root.ID
+	}
+	var ws *agentstate.Workspace
+	for i := range s.Workspaces {
+		if s.Workspaces[i].RootID == rootID {
+			ws = &s.Workspaces[i]
+			break
+		}
+	}
+	if ws == nil {
+		return "", fmt.Errorf("no e2e workspace for root %q", rootID)
+	}
+	if len(ws.Pending) == 0 {
+		return "", nil
+	}
+	var out string
+	for _, p := range ws.Pending {
+		sas := daemon.SASFingerprint(p.SignPub, p.EncPub)
+		out += fmt.Sprintf("%s\t%s\t%s\t%s\n", p.ReqID, p.Name, sas, p.ParentIntent)
+	}
+	return out, nil
+}
+
+// workspaceKeyRotate generates a fresh workspace key, bumps the epoch,
+// delivers a rekey grant to every admitted anchor, and persists the new state.
+// wsName == "" uses the active workspace.
+func workspaceKeyRotate(ctx context.Context, d hostagent.Deps, wsName string) error {
+	st, err := agentstate.Load(d.StatePath)
+	if err != nil {
+		return fmt.Errorf("load state: %w", err)
+	}
+	rootID := st.ActiveWorkspace
+	if wsName != "" {
+		root, ok, err := hostagent.GetByName(d.StatePath, wsName)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("no workspace named %q — create it first", wsName)
+		}
+		rootID = root.ID
+	}
+	var ws *agentstate.Workspace
+	for i := range st.Workspaces {
+		if st.Workspaces[i].RootID == rootID {
+			ws = &st.Workspaces[i]
+			break
+		}
+	}
+	if ws == nil {
+		return fmt.Errorf("no e2e workspace for root %q", rootID)
+	}
+	if !ws.E2E {
+		return fmt.Errorf("workspace %q is not end-to-end encrypted", rootID)
+	}
+	dm := daemon.NewRuntime(daemon.Config{State: st, StatePath: d.StatePath, Hub: d.Hub})
+	dm.HydrateWorkspaceTrust(ws)
+	if _, err := dm.RotateKey(ctx, ws); err != nil {
+		return fmt.Errorf("rotate key: %w", err)
+	}
+	if err := agentstate.Save(d.StatePath, st); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+	return nil
+}
+
+// workspaceRemove evicts anchorID from the workspace, rotates the key so the
+// removed anchor is locked out, and persists the updated state.
+// wsName == "" uses the active workspace.
+func workspaceRemove(ctx context.Context, d hostagent.Deps, wsName, anchorID string) error {
+	st, err := agentstate.Load(d.StatePath)
+	if err != nil {
+		return fmt.Errorf("load state: %w", err)
+	}
+	rootID := st.ActiveWorkspace
+	if wsName != "" {
+		root, ok, err := hostagent.GetByName(d.StatePath, wsName)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("no workspace named %q — create it first", wsName)
+		}
+		rootID = root.ID
+	}
+	var ws *agentstate.Workspace
+	for i := range st.Workspaces {
+		if st.Workspaces[i].RootID == rootID {
+			ws = &st.Workspaces[i]
+			break
+		}
+	}
+	if ws == nil {
+		return fmt.Errorf("no e2e workspace for root %q", rootID)
+	}
+	if !ws.E2E {
+		return fmt.Errorf("workspace %q is not end-to-end encrypted", rootID)
+	}
+	dm := daemon.NewRuntime(daemon.Config{State: st, StatePath: d.StatePath, Hub: d.Hub})
+	dm.HydrateWorkspaceTrust(ws)
+	if _, err := dm.RemoveAnchor(ctx, ws, anchorID); err != nil {
+		return fmt.Errorf("remove anchor: %w", err)
+	}
+	if err := agentstate.Save(d.StatePath, st); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+	return nil
+}
+
+// workspaceAdmit admits a pending join request identified by reqID in the
+// active (or named) workspace. It reconstructs an in-process daemon, hydrates
+// the trust graph, calls AdmitJoinRequest, removes the request from Pending,
+// and saves state. Returns the new anchor count on success.
+func workspaceAdmit(ctx context.Context, d hostagent.Deps, wsName, reqID string) (int, error) {
+	st, err := agentstate.Load(d.StatePath)
+	if err != nil {
+		return 0, fmt.Errorf("load state: %w", err)
+	}
+	rootID := st.ActiveWorkspace
+	if wsName != "" {
+		root, ok, err := hostagent.GetByName(d.StatePath, wsName)
+		if err != nil {
+			return 0, err
+		}
+		if !ok {
+			return 0, fmt.Errorf("no workspace named %q — create it first", wsName)
+		}
+		rootID = root.ID
+	}
+	var ws *agentstate.Workspace
+	for i := range st.Workspaces {
+		if st.Workspaces[i].RootID == rootID {
+			ws = &st.Workspaces[i]
+			break
+		}
+	}
+	if ws == nil {
+		return 0, fmt.Errorf("no e2e workspace for root %q", rootID)
+	}
+	if !ws.E2E {
+		return 0, fmt.Errorf("workspace %q is not end-to-end encrypted", rootID)
+	}
+	// Find the pending request.
+	var pending *agentstate.PendingJoin
+	for i := range ws.Pending {
+		if ws.Pending[i].ReqID == reqID {
+			pending = &ws.Pending[i]
+			break
+		}
+	}
+	if pending == nil {
+		return 0, fmt.Errorf("no pending request with id %q", reqID)
+	}
+	dm := daemon.NewRuntime(daemon.Config{State: st, StatePath: d.StatePath, Hub: d.Hub})
+	dm.HydrateWorkspaceTrust(ws)
+	req := daemon.JoinRequest{
+		ReqID:        pending.ReqID,
+		Name:         pending.Name,
+		ParentIntent: pending.ParentIntent,
+		SignPub:      pending.SignPub,
+		EncPub:       pending.EncPub,
+	}
+	if _, err := dm.AdmitJoinRequest(ctx, ws, req); err != nil {
+		return 0, fmt.Errorf("admit: %w", err)
+	}
+	// Remove the admitted entry from Pending (in-place filter).
+	filtered := ws.Pending[:0]
+	for _, p := range ws.Pending {
+		if p.ReqID != reqID {
+			filtered = append(filtered, p)
+		}
+	}
+	ws.Pending = filtered
+	if err := agentstate.Save(d.StatePath, st); err != nil {
+		return 0, fmt.Errorf("save state: %w", err)
+	}
+	return len(ws.Anchors), nil
+}
+
+// workspaceJoin joins an existing e2e workspace by posting a JoinRequest to the
+// waiting-room channel and awaiting a matching AdmitGrant. target is either a
+// bare waiting-room channel handle or a URL — the channel id is extracted from
+// the host subdomain or the first path component. name is the human name for
+// the new local anchor agent. Uses TOFU on first contact (expectedAdminPub == nil).
+func workspaceJoin(ctx context.Context, d hostagent.Deps, target, name string) error {
+	wroom := resolveWaitingRoom(target)
+
+	// Mint keypairs inline (hostagent internals are unexported).
+	_, signPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return fmt.Errorf("generate sign key: %w", err)
+	}
+	signPub := ed25519.PublicKey(signPriv.Public().(ed25519.PublicKey))
+	encPub, encPriv, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		return fmt.Errorf("generate enc key: %w", err)
+	}
+
+	agentID := d.MintKey()
+
+	// Subscribe BEFORE publishing so we don't miss the grant.
+	joinCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	frames, err := d.Hub.Subscribe(joinCtx, wroom, "")
+	if err != nil {
+		return fmt.Errorf("subscribe to waiting room: %w", err)
+	}
+
+	jb, err := daemon.JoinRequest{
+		ReqID:   agentID,
+		Name:    name,
+		SignPub: []byte(signPub),
+		EncPub:  encPub[:],
+	}.Marshal()
+	if err != nil {
+		return fmt.Errorf("marshal join request: %w", err)
+	}
+	if err := d.Hub.Publish(joinCtx, wroom, string(jb)); err != nil {
+		return fmt.Errorf("publish join request: %w", err)
+	}
+
+	sas := daemon.SASFingerprint([]byte(signPub), encPub[:])
+	fmt.Printf("join request sent\n  reqId: %s\n  SAS:   %s\n  (share the SAS with the admin to confirm)\n", agentID, sas)
+
+	for {
+		select {
+		case <-joinCtx.Done():
+			return fmt.Errorf("no admit grant received — ask the admin to run 'workspace admit %s'", agentID)
+		case fr, ok := <-frames:
+			if !ok {
+				return fmt.Errorf("no admit grant received — ask the admin to run 'workspace admit %s'", agentID)
+			}
+			var grant daemon.AdmitGrant
+			if err := json.Unmarshal([]byte(fr.Body), &grant); err != nil {
+				continue
+			}
+			if grant.ReqID != agentID {
+				continue
+			}
+			if len(grant.Sig) == 0 || len(grant.WrappedKey) == 0 {
+				continue
+			}
+			ws, _, adoptOK := daemon.ProcessAdmitGrant(grant, encPriv[:], nil)
+			if !adoptOK {
+				return fmt.Errorf("received grant for %s but ProcessAdmitGrant failed (bad signature or key)", agentID)
+			}
+
+			s, err := agentstate.Load(d.StatePath)
+			if err != nil {
+				return fmt.Errorf("load state: %w", err)
+			}
+			inbox, err := d.Hub.MintChannel(joinCtx)
+			if err != nil {
+				return fmt.Errorf("mint inbox channel: %w", err)
+			}
+			if _, ok := s.AgentByID(ws.RootID); !ok {
+				s.Upsert(agentstate.Agent{ID: ws.RootID})
+			}
+			s.Upsert(agentstate.Agent{
+				ID:           agentID,
+				Key:          d.MintKey(),
+				Name:         name,
+				Parent:       ws.RootID,
+				InboxChannel: inbox,
+				SignSeed:     signPriv.Seed(),
+				EncPriv:      encPriv[:],
+			})
+			s.Workspaces = append(s.Workspaces, *ws)
+			s.ActiveWorkspace = ws.RootID
+			if err := agentstate.Save(d.StatePath, s); err != nil {
+				return fmt.Errorf("save state: %w", err)
+			}
+			fmt.Printf("joined workspace (root: %s)\n", ws.RootID)
+			return nil
+		}
+	}
+}
+
+// resolveWaitingRoom extracts the channel id from target, which may be a full
+// URL (https://<id>.<domain>/...) or a bare channel handle. Strips scheme,
+// takes the substring before the first '.' or '/', and falls back to target
+// unchanged if neither is present.
+func resolveWaitingRoom(target string) string {
+	if i := strings.Index(target, "://"); i >= 0 {
+		target = target[i+3:]
+	}
+	if i := strings.IndexAny(target, "./"); i >= 0 {
+		return target[:i]
+	}
+	return target
+}
+
 // workspaceCmd handles `botbus workspace <sub> [args/flags]`.
 func workspaceCmd(args []string) {
 	if len(args) < 1 {
@@ -248,6 +563,107 @@ func workspaceCmd(args []string) {
 			fmt.Fprintf(tw, "%s\t%s\t%s\n", a.Name, a.Parent, a.InboxChannel)
 		}
 		tw.Flush()
+	case "pending":
+		fs := flag.NewFlagSet("workspace pending", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		wsp := fs.String("workspace", "", "workspace name (default: active workspace)")
+		if err := fs.Parse(args[1:]); err != nil {
+			workspaceUsage()
+			os.Exit(2)
+		}
+		out, err := workspacePending(agentstate.DefaultPath(), *wsp)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "pending:", err)
+			os.Exit(1)
+		}
+		if out == "" {
+			fmt.Println("no pending requests")
+		} else {
+			fmt.Print(out)
+		}
+	case "join":
+		// Parse: join <url|handle> <name>
+		if len(args) < 3 || args[1] == "" || args[2] == "" {
+			workspaceUsage()
+			os.Exit(2)
+		}
+		if err := workspaceJoin(ctx, realDeps(), args[1], args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, "join:", err)
+			os.Exit(1)
+		}
+	case "admit":
+		// Parse: admit <reqId> [--workspace <name>]
+		fs := flag.NewFlagSet("workspace admit", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		wsp := fs.String("workspace", "", "workspace name (default: active workspace)")
+		var positionals []string
+		rest := args[1:]
+		for {
+			if err := fs.Parse(rest); err != nil {
+				workspaceUsage()
+				os.Exit(2)
+			}
+			rest = fs.Args()
+			if len(rest) == 0 {
+				break
+			}
+			positionals = append(positionals, rest[0])
+			rest = rest[1:]
+		}
+		if len(positionals) != 1 || positionals[0] == "" {
+			workspaceUsage()
+			os.Exit(2)
+		}
+		reqID := positionals[0]
+		anchorCount, err := workspaceAdmit(ctx, realDeps(), *wsp, reqID)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "admit:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("admitted %s (workspace now has %d anchor(s))\n", reqID, anchorCount)
+	case "key-rotate":
+		// Parse: key-rotate [--workspace <name>]
+		fs := flag.NewFlagSet("workspace key-rotate", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		wsp := fs.String("workspace", "", "workspace name (default: active workspace)")
+		if err := fs.Parse(args[1:]); err != nil {
+			workspaceUsage()
+			os.Exit(2)
+		}
+		if err := workspaceKeyRotate(ctx, realDeps(), *wsp); err != nil {
+			fmt.Fprintln(os.Stderr, "key-rotate:", err)
+			os.Exit(1)
+		}
+		fmt.Println("key rotated")
+	case "remove":
+		// Parse: remove <anchorId> [--workspace <name>]
+		fs := flag.NewFlagSet("workspace remove", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		wsp := fs.String("workspace", "", "workspace name (default: active workspace)")
+		var positionals []string
+		rest := args[1:]
+		for {
+			if err := fs.Parse(rest); err != nil {
+				workspaceUsage()
+				os.Exit(2)
+			}
+			rest = fs.Args()
+			if len(rest) == 0 {
+				break
+			}
+			positionals = append(positionals, rest[0])
+			rest = rest[1:]
+		}
+		if len(positionals) != 1 || positionals[0] == "" {
+			workspaceUsage()
+			os.Exit(2)
+		}
+		anchorID := positionals[0]
+		if err := workspaceRemove(ctx, realDeps(), *wsp, anchorID); err != nil {
+			fmt.Fprintln(os.Stderr, "remove:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("removed anchor %s\n", anchorID)
 	default:
 		workspaceUsage()
 		os.Exit(2)
@@ -255,5 +671,5 @@ func workspaceCmd(args []string) {
 }
 
 func workspaceUsage() {
-	fmt.Fprintln(os.Stderr, "usage: botbus workspace <create <name> [--e2e]|invite <user> --workspace <name>|use <name>|list>")
+	fmt.Fprintln(os.Stderr, "usage: botbus workspace <create <name> [--e2e]|invite <user> --workspace <name>|use <name>|list|pending [--workspace <name>]|join <url|handle> <name>|admit <reqId> [--workspace <name>]|key-rotate [--workspace <name>]|remove <anchorId> [--workspace <name>]>")
 }

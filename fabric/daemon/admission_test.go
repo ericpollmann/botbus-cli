@@ -106,32 +106,32 @@ func TestAdmitGrantRoundTrip(t *testing.T) {
 	}
 }
 
-// sasFingerprint is deterministic (same input → same output).
+// SASFingerprint is deterministic (same input → same output).
 func TestSasFingerprintDeterministic(t *testing.T) {
 	signPub := []byte{1, 2, 3, 4, 5, 6, 7, 8}
 	encPub := []byte{9, 10, 11, 12, 13, 14, 15, 16}
-	fp1 := sasFingerprint(signPub, encPub)
-	fp2 := sasFingerprint(signPub, encPub)
+	fp1 := SASFingerprint(signPub, encPub)
+	fp2 := SASFingerprint(signPub, encPub)
 	if fp1 != fp2 {
-		t.Fatalf("sasFingerprint not deterministic: %q != %q", fp1, fp2)
+		t.Fatalf("SASFingerprint not deterministic: %q != %q", fp1, fp2)
 	}
 	// Must look like XXXX-XXXX-XXXX (two dashes, 14 chars total).
 	if len(fp1) != 14 {
-		t.Fatalf("sasFingerprint length = %d, want 14: %q", len(fp1), fp1)
+		t.Fatalf("SASFingerprint length = %d, want 14: %q", len(fp1), fp1)
 	}
 	if fp1[4] != '-' || fp1[9] != '-' {
-		t.Fatalf("sasFingerprint format wrong: %q", fp1)
+		t.Fatalf("SASFingerprint format wrong: %q", fp1)
 	}
 }
 
-// sasFingerprint differs for different inputs.
+// SASFingerprint differs for different inputs.
 func TestSasFingerprintDiffers(t *testing.T) {
 	signPub1 := []byte{1, 2, 3, 4}
 	signPub2 := []byte{5, 6, 7, 8}
 	encPub := []byte{9, 10, 11, 12}
-	fp1 := sasFingerprint(signPub1, encPub)
-	fp2 := sasFingerprint(signPub2, encPub)
+	fp1 := SASFingerprint(signPub1, encPub)
+	fp2 := SASFingerprint(signPub2, encPub)
 	if fp1 == fp2 {
-		t.Fatalf("sasFingerprint should differ for different inputs: %q == %q", fp1, fp2)
+		t.Fatalf("SASFingerprint should differ for different inputs: %q == %q", fp1, fp2)
 	}
 }

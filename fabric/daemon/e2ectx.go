@@ -31,7 +31,13 @@ func (d *Daemon) e2eContextFor(agentID string) (*e2eCtx, bool, error) {
 	if !ok || !ws.E2E {
 		return nil, false, nil // plaintext path
 	}
-	key, err := keyArray(ws.Key)
+	// Read ws.Key and ws.Epoch under d.mu to avoid a data race with applyRekey,
+	// which writes them under the lock. Copy the bytes out before releasing.
+	d.mu.Lock()
+	keyBytes := append([]byte(nil), ws.Key...)
+	epoch := ws.Epoch
+	d.mu.Unlock()
+	key, err := keyArray(keyBytes)
 	if err != nil {
 		return nil, true, err
 	}
@@ -41,12 +47,25 @@ func (d *Daemon) e2eContextFor(agentID string) (*e2eCtx, bool, error) {
 	}
 	return &e2eCtx{
 		key:       key,
-		epoch:     ws.Epoch,
+		epoch:     epoch,
 		channelID: ws.RootID,
 		deviceID:  agentID,
 		devPriv:   ed25519.NewKeyFromSeed(ag.SignSeed),
 		ws:        ws,
 	}, true, nil
+}
+
+// currentKey returns the workspace's current symmetric key, read under d.mu so
+// the opener observes rotations applied by the roster-ingest loop.
+func (d *Daemon) currentKey(ws *agentstate.Workspace) ([32]byte, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(ws.Key) != 32 {
+		return [32]byte{}, false
+	}
+	var k [32]byte
+	copy(k[:], ws.Key)
+	return k, true
 }
 
 // nextCounter returns the next monotonically-increasing sender counter for the

@@ -17,12 +17,10 @@ var rosterAAD = []byte("botbus-e2e-roster-v1")
 
 // rosterFrame is the cleartext-before-sealing roster payload.
 type rosterFrame struct {
-	Kind       string    `json:"kind"`                 // "cert" | "anchors" | "rekey"
+	Kind       string    `json:"kind"`                 // "cert" | "anchors"
 	Cert       *e2e.Cert `json:"cert,omitempty"`       // Kind=="cert"
 	AnchorBlob []byte    `json:"anchorBlob,omitempty"` // admin-signed device-set blob, Kind=="anchors"
 	AnchorSig  []byte    `json:"anchorSig,omitempty"`  // admin signature over AnchorBlob
-	WrappedKey []byte    `json:"wrappedKey,omitempty"` // NaCl-sealed new key, Kind=="rekey"
-	AnchorID   string    `json:"anchorId,omitempty"`   // target anchor for this rekey frame
 }
 
 // sealRosterFrame JSON-encodes f, seals it with e2e.Seal under key/epoch/rosterAAD,
@@ -75,13 +73,17 @@ func (d *Daemon) publishCert(ctx context.Context, ws *agentstate.Workspace, c e2
 	return d.hub.Publish(ctx, ws.Roster, b64)
 }
 
-// ingestRosterFrame decrypts a base64 roster frame and applies its content:
-//   - Kind=="cert"    → d.trust.addCert
-//   - Kind=="anchors" → d.trust.applyAnchorSet (requires valid admin signature)
+// ingestRosterFrame processes an inbound roster-channel frame.
+// Rekey grants are published cleartext (JSON, starts with '{'); cert/anchors
+// frames are base64-sealed envelopes (never start with '{').
 //
 // Any decryption or parse error is silently ignored (fail-closed: a frame we
 // cannot authenticate provides no trust).
 func (d *Daemon) ingestRosterFrame(ws *agentstate.Workspace, b64 string) {
+	if len(b64) > 0 && b64[0] == '{' {
+		d.ingestRekeyGrant(ws, b64)
+		return
+	}
 	key, err := keyArray(ws.Key)
 	if err != nil {
 		log.Printf("roster: bad workspace key: %v", err)
@@ -107,4 +109,32 @@ func (d *Daemon) ingestRosterFrame(ws *agentstate.Workspace, b64 string) {
 			log.Printf("roster: applyAnchorSet failed: %v", err)
 		}
 	}
+}
+
+// ingestRekeyGrant adopts a signed rekey grant addressed to a local anchor.
+func (d *Daemon) ingestRekeyGrant(ws *agentstate.Workspace, js string) {
+	g, err := parseAdmitGrant([]byte(js))
+	if err != nil || len(g.WrappedKey) == 0 {
+		return
+	}
+	ag, ok := d.state.AgentByID(g.AnchorID)
+	if !ok || len(ag.EncPriv) != 32 {
+		return // not addressed to one of our local anchors
+	}
+	key, epoch, ok := ProcessRekey(g, ag.EncPriv, ws.AdminPub)
+	if !ok {
+		return
+	}
+	d.applyRekey(ws, key, epoch)
+}
+
+// applyRekey installs a newly-adopted key/epoch under d.mu and persists it.
+func (d *Daemon) applyRekey(ws *agentstate.Workspace, key [32]byte, epoch uint32) {
+	d.mu.Lock()
+	if epoch >= ws.Epoch { // monotonic: never roll backwards
+		ws.Key = key[:]
+		ws.Epoch = epoch
+	}
+	d.mu.Unlock()
+	d.persistWorkspaceKey(ws)
 }

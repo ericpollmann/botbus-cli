@@ -19,8 +19,11 @@ import (
 type opener func(e envelope.Envelope) (envelope.Envelope, bool)
 
 // openerFor builds the opener function for the given receiving agent.
-// It captures the agent's e2e context once (no lock held in the closure itself);
-// the closure calls d.trust.resolve and d.replay.accept, both of which are
+// It captures the static e2e context once (channel ID, device ID, signing key,
+// workspace pointer) but re-reads the current workspace key per frame via
+// d.currentKey so that key rotations applied by the roster-ingest loop take
+// effect immediately without restarting the inbox loop.
+// The closure calls d.trust.resolve and d.replay.accept, both of which are
 // internally locked.
 func (d *Daemon) openerFor(agentID string) opener {
 	ec, isE2E, err := d.e2eContextFor(agentID)
@@ -39,6 +42,10 @@ func (d *Daemon) openerFor(agentID string) opener {
 			// The connect welcome is delivered locally (never traverses the relay).
 			return envelope.Envelope{}, false
 		}
+		key, ok := d.currentKey(ec.ws) // re-read per frame so rotations take effect live
+		if !ok {
+			return envelope.Envelope{}, false
+		}
 		raw, derr := base64.StdEncoding.DecodeString(e.Enc)
 		if derr != nil {
 			return envelope.Envelope{}, false
@@ -47,7 +54,7 @@ func (d *Daemon) openerFor(agentID string) opener {
 		if perr != nil {
 			return envelope.Envelope{}, false
 		}
-		dev, counter, content, oerr := e2e.OpenMessage(ec.key, ec.channelID, env, d.trust.resolve)
+		dev, counter, content, oerr := e2e.OpenMessage(key, ec.channelID, env, d.trust.resolve)
 		if oerr != nil {
 			return envelope.Envelope{}, false
 		}
@@ -58,9 +65,7 @@ func (d *Daemon) openerFor(agentID string) opener {
 		if cerr != nil {
 			return envelope.Envelope{}, false
 		}
-		e.Subject = subj
-		e.Body = body
-		e.Enc = ""
+		e.Subject, e.Body, e.Enc = subj, body, ""
 		return e, true
 	}
 }

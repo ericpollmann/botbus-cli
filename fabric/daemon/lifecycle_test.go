@@ -132,29 +132,30 @@ func TestRotateKeyReWrapsToAnchors(t *testing.T) {
 		}
 	}
 
-	// Find the rekey frame addressed to anchor-1 on the roster channel.
+	// Find the signed rekey grant addressed to anchor-1 on the roster channel.
 	rosterMsgs := fake.Published("roster")
-	var rekeyFrame *rosterFrame
+	adminPub := append([]byte(nil), ws.AdminPub...)
+	var rekeyGrant *AdmitGrant
 	for _, msg := range rosterMsgs {
-		f, err := openRosterFrame(newKey, msg)
-		if err != nil {
-			// Could be sealed under new epoch; try.
+		if len(msg) == 0 || msg[0] != '{' {
 			continue
 		}
-		if f.Kind == "rekey" && f.AnchorID == "anchor-1" {
-			cp := f
-			rekeyFrame = &cp
-			break
+		g, perr := parseAdmitGrant([]byte(msg))
+		if perr != nil || g.AnchorID != "anchor-1" {
+			continue
 		}
+		cp := g
+		rekeyGrant = &cp
+		break
 	}
-	if rekeyFrame == nil {
-		t.Fatal("no rekey frame addressed to anchor-1 found on the roster channel")
+	if rekeyGrant == nil {
+		t.Fatal("no signed rekey grant addressed to anchor-1 found on the roster channel")
 	}
 
 	// The anchor can unwrap the new key using its enc-priv.
-	recovered, ok := unwrapKey(rekeyFrame.WrappedKey, *encPriv)
+	recovered, _, ok := ProcessRekey(*rekeyGrant, encPriv[:], adminPub)
 	if !ok {
-		t.Fatal("anchor could not unwrap the new key from rekey frame")
+		t.Fatal("anchor could not unwrap the new key from rekey grant")
 	}
 	if recovered != newKey {
 		t.Fatalf("unwrapped key mismatch: got %x, want %x", recovered, newKey)
@@ -262,14 +263,14 @@ func TestRemoveAnchorEvicts(t *testing.T) {
 		t.Fatal("anchor-keep must still appear in the new-epoch anchor blob")
 	}
 
-	// (c) No rekey frame may be addressed to anchor-remove.
+	// (c) No signed rekey grant may be addressed to anchor-remove.
 	for _, msg := range rosterMsgs {
-		f, err := openRosterFrame(newKey, msg)
-		if err != nil {
+		if len(msg) == 0 || msg[0] != '{' {
 			continue
 		}
-		if f.Kind == "rekey" && f.AnchorID == "anchor-remove" {
-			t.Fatal("removed anchor must NOT receive a rekey frame")
+		g, perr := parseAdmitGrant([]byte(msg))
+		if perr == nil && g.AnchorID == "anchor-remove" {
+			t.Fatal("removed anchor must NOT receive a rekey grant")
 		}
 	}
 
@@ -296,19 +297,19 @@ func TestRemoveAnchorEvicts(t *testing.T) {
 		t.Fatal("anchor-keep must still resolve after removing anchor-remove")
 	}
 
-	// Anchor-keep MUST receive a rekey frame so it can decrypt future traffic.
+	// Anchor-keep MUST receive a signed rekey grant so it can decrypt future traffic.
 	var keepRekeyed bool
 	for _, msg := range rosterMsgs {
-		f, err := openRosterFrame(newKey, msg)
-		if err != nil {
+		if len(msg) == 0 || msg[0] != '{' {
 			continue
 		}
-		if f.Kind == "rekey" && f.AnchorID == "anchor-keep" {
+		g, perr := parseAdmitGrant([]byte(msg))
+		if perr == nil && g.AnchorID == "anchor-keep" {
 			keepRekeyed = true
 		}
 	}
 	if !keepRekeyed {
-		t.Fatal("anchor-keep must receive a rekey frame after rotation")
+		t.Fatal("anchor-keep must receive a rekey grant after rotation")
 	}
 
 	// Paranoia: the new key must NOT appear in cleartext in any published msg.
