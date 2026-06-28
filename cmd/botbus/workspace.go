@@ -197,6 +197,86 @@ func workspacePending(statePath, wsName string) (string, error) {
 	return out, nil
 }
 
+// workspaceKeyRotate generates a fresh workspace key, bumps the epoch,
+// delivers a rekey grant to every admitted anchor, and persists the new state.
+// wsName == "" uses the active workspace.
+func workspaceKeyRotate(ctx context.Context, d hostagent.Deps, wsName string) error {
+	st, err := agentstate.Load(d.StatePath)
+	if err != nil {
+		return fmt.Errorf("load state: %w", err)
+	}
+	rootID := st.ActiveWorkspace
+	if wsName != "" {
+		root, ok, err := hostagent.GetByName(d.StatePath, wsName)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("no workspace named %q — create it first", wsName)
+		}
+		rootID = root.ID
+	}
+	var ws *agentstate.Workspace
+	for i := range st.Workspaces {
+		if st.Workspaces[i].RootID == rootID {
+			ws = &st.Workspaces[i]
+			break
+		}
+	}
+	if ws == nil {
+		return fmt.Errorf("no e2e workspace for root %q", rootID)
+	}
+	dm := daemon.NewRuntime(daemon.Config{State: st, StatePath: d.StatePath, Hub: d.Hub})
+	dm.HydrateWorkspaceTrust(ws)
+	if _, err := dm.RotateKey(ctx, ws); err != nil {
+		return fmt.Errorf("rotate key: %w", err)
+	}
+	if err := agentstate.Save(d.StatePath, st); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+	return nil
+}
+
+// workspaceRemove evicts anchorID from the workspace, rotates the key so the
+// removed anchor is locked out, and persists the updated state.
+// wsName == "" uses the active workspace.
+func workspaceRemove(ctx context.Context, d hostagent.Deps, wsName, anchorID string) error {
+	st, err := agentstate.Load(d.StatePath)
+	if err != nil {
+		return fmt.Errorf("load state: %w", err)
+	}
+	rootID := st.ActiveWorkspace
+	if wsName != "" {
+		root, ok, err := hostagent.GetByName(d.StatePath, wsName)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("no workspace named %q — create it first", wsName)
+		}
+		rootID = root.ID
+	}
+	var ws *agentstate.Workspace
+	for i := range st.Workspaces {
+		if st.Workspaces[i].RootID == rootID {
+			ws = &st.Workspaces[i]
+			break
+		}
+	}
+	if ws == nil {
+		return fmt.Errorf("no e2e workspace for root %q", rootID)
+	}
+	dm := daemon.NewRuntime(daemon.Config{State: st, StatePath: d.StatePath, Hub: d.Hub})
+	dm.HydrateWorkspaceTrust(ws)
+	if _, err := dm.RemoveAnchor(ctx, ws, anchorID); err != nil {
+		return fmt.Errorf("remove anchor: %w", err)
+	}
+	if err := agentstate.Save(d.StatePath, st); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+	return nil
+}
+
 // workspaceAdmit admits a pending join request identified by reqID in the
 // active (or named) workspace. It reconstructs an in-process daemon, hydrates
 // the trust graph, calls AdmitJoinRequest, removes the request from Pending,
@@ -403,6 +483,49 @@ func workspaceCmd(args []string) {
 			os.Exit(1)
 		}
 		fmt.Printf("admitted %s\n", reqID)
+	case "key-rotate":
+		// Parse: key-rotate [--workspace <name>]
+		fs := flag.NewFlagSet("workspace key-rotate", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		wsp := fs.String("workspace", "", "workspace name (default: active workspace)")
+		if err := fs.Parse(args[1:]); err != nil {
+			workspaceUsage()
+			os.Exit(2)
+		}
+		if err := workspaceKeyRotate(ctx, realDeps(), *wsp); err != nil {
+			fmt.Fprintln(os.Stderr, "key-rotate:", err)
+			os.Exit(1)
+		}
+		fmt.Println("key rotated")
+	case "remove":
+		// Parse: remove <anchorId> [--workspace <name>]
+		fs := flag.NewFlagSet("workspace remove", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		wsp := fs.String("workspace", "", "workspace name (default: active workspace)")
+		var positionals []string
+		rest := args[1:]
+		for {
+			if err := fs.Parse(rest); err != nil {
+				workspaceUsage()
+				os.Exit(2)
+			}
+			rest = fs.Args()
+			if len(rest) == 0 {
+				break
+			}
+			positionals = append(positionals, rest[0])
+			rest = rest[1:]
+		}
+		if len(positionals) != 1 || positionals[0] == "" {
+			workspaceUsage()
+			os.Exit(2)
+		}
+		anchorID := positionals[0]
+		if err := workspaceRemove(ctx, realDeps(), *wsp, anchorID); err != nil {
+			fmt.Fprintln(os.Stderr, "remove:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("removed anchor %s\n", anchorID)
 	default:
 		workspaceUsage()
 		os.Exit(2)
@@ -410,5 +533,5 @@ func workspaceCmd(args []string) {
 }
 
 func workspaceUsage() {
-	fmt.Fprintln(os.Stderr, "usage: botbus workspace <create <name> [--e2e]|invite <user> --workspace <name>|use <name>|list|pending [--workspace <name>]|admit <reqId> [--workspace <name>]>")
+	fmt.Fprintln(os.Stderr, "usage: botbus workspace <create <name> [--e2e]|invite <user> --workspace <name>|use <name>|list|pending [--workspace <name>]|admit <reqId> [--workspace <name>]|key-rotate [--workspace <name>]|remove <anchorId> [--workspace <name>]>")
 }
