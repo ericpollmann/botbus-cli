@@ -2,7 +2,11 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
+	"os"
+	"sync/atomic"
+	"time"
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
 )
@@ -115,4 +119,55 @@ func clonePending(in []agentstate.PendingJoin) []agentstate.PendingJoin {
 		}
 	}
 	return out
+}
+
+// statePollEveryNs controls how often the daemon polls state.json for external
+// modifications. Atomic so tests can shorten it. Default 2s: a one-shot admin
+// command is adopted within ~2s, and the per-tick cost is a single os.Stat plus
+// — only when the mtime changed — a small-file Load, negligible beside the SSE
+// I/O the daemon already does per frame.
+var statePollEveryNs int64 = int64(2 * time.Second)
+
+func setStatePollEvery(d time.Duration) { atomic.StoreInt64(&statePollEveryNs, int64(d)) }
+func getStatePollEvery() time.Duration  { return time.Duration(atomic.LoadInt64(&statePollEveryNs)) }
+
+// runStateWatch polls statePath and, when its mtime changes (an external
+// one-shot CLI wrote it), reconciles the in-memory state via reloadFromDisk:
+// existing workspaces' key/epoch/anchors/pending are adopted in place and
+// genuinely-new agents are attached — WITHOUT cancelling or restarting any
+// inbox/roster/waiting-room loop, so live hub subscriptions are preserved. The
+// watcher never writes state.json. No-op when statePath is empty.
+func (d *Daemon) runStateWatch(ctx context.Context) {
+	if d.statePath == "" {
+		return
+	}
+	last := statMTime(d.statePath)
+	t := time.NewTicker(getStatePollEvery())
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			m := statMTime(d.statePath)
+			if m.Equal(last) {
+				continue
+			}
+			last = m
+			for _, a := range d.reloadFromDisk() {
+				d.attach(a) // idempotent; starts the new agent's loops, no effect on existing agents
+			}
+		}
+	}
+}
+
+// statMTime returns path's modification time, or the zero time if it cannot be
+// stat'd (a transient error is treated as "unchanged" so it never triggers a
+// spurious reconcile).
+func statMTime(path string) time.Time {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return fi.ModTime()
 }

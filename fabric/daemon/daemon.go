@@ -361,6 +361,9 @@ func (d *Daemon) RunOn(ctx context.Context, ln net.Listener) error {
 			}
 		}
 	}
+	// Watch state.json for same-host one-shot CLI writes (key-rotate/admit/
+	// remove) and adopt them live without disrupting any loop.
+	g.Go(func() error { d.runStateWatch(gctx); return nil })
 	srv := &http.Server{Handler: d.mux()}
 	g.Go(func() error {
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
