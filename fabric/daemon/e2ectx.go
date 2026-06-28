@@ -31,7 +31,13 @@ func (d *Daemon) e2eContextFor(agentID string) (*e2eCtx, bool, error) {
 	if !ok || !ws.E2E {
 		return nil, false, nil // plaintext path
 	}
-	key, err := keyArray(ws.Key)
+	// Read ws.Key and ws.Epoch under d.mu to avoid a data race with applyRekey,
+	// which writes them under the lock. Copy the bytes out before releasing.
+	d.mu.Lock()
+	keyBytes := append([]byte(nil), ws.Key...)
+	epoch := ws.Epoch
+	d.mu.Unlock()
+	key, err := keyArray(keyBytes)
 	if err != nil {
 		return nil, true, err
 	}
@@ -41,7 +47,7 @@ func (d *Daemon) e2eContextFor(agentID string) (*e2eCtx, bool, error) {
 	}
 	return &e2eCtx{
 		key:       key,
-		epoch:     ws.Epoch,
+		epoch:     epoch,
 		channelID: ws.RootID,
 		deviceID:  agentID,
 		devPriv:   ed25519.NewKeyFromSeed(ag.SignSeed),

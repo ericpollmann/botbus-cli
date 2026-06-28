@@ -125,7 +125,8 @@ func (d *Daemon) hydrateWorkspaceTrust(ws *agentstate.Workspace) {
 		}
 	}
 	for _, ar := range ws.Anchors {
-		if len(ar.SignPub) == ed25519.SeedSize || len(ar.SignPub) == ed25519.PublicKeySize {
+		// ed25519.SeedSize == ed25519.PublicKeySize == 32; the OR was always true for both.
+		if len(ar.SignPub) == ed25519.PublicKeySize {
 			d.trust.anchors.set(ar.ID, ed25519.PublicKey(ar.SignPub))
 		}
 	}
@@ -375,12 +376,18 @@ func (d *Daemon) RunOn(ctx context.Context, ln net.Listener) error {
 }
 
 // persistWorkspaceKey best-effort saves ws's key/epoch to state.json after a
-// roster-ingested rotation. No-op when statePath is unset (tests).
+// roster-ingested rotation or a new pending join. No-op when statePath is unset
+// (tests). Acquires d.mu around the marshal+write so concurrent applyRekey /
+// recordPending calls cannot race on d.state. Callers must NOT hold d.mu when
+// calling this function.
 func (d *Daemon) persistWorkspaceKey(ws *agentstate.Workspace) {
 	if d.statePath == "" {
 		return
 	}
-	if err := agentstate.Save(d.statePath, d.state); err != nil {
+	d.mu.Lock()
+	err := agentstate.Save(d.statePath, d.state)
+	d.mu.Unlock()
+	if err != nil {
 		log.Printf("roster: persist workspace key: %v", err)
 	}
 }
