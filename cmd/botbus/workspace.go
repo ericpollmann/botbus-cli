@@ -230,6 +230,9 @@ func workspaceKeyRotate(ctx context.Context, d hostagent.Deps, wsName string) er
 	if ws == nil {
 		return fmt.Errorf("no e2e workspace for root %q", rootID)
 	}
+	if !ws.E2E {
+		return fmt.Errorf("workspace %q is not end-to-end encrypted", rootID)
+	}
 	dm := daemon.NewRuntime(daemon.Config{State: st, StatePath: d.StatePath, Hub: d.Hub})
 	dm.HydrateWorkspaceTrust(ws)
 	if _, err := dm.RotateKey(ctx, ws); err != nil {
@@ -270,6 +273,9 @@ func workspaceRemove(ctx context.Context, d hostagent.Deps, wsName, anchorID str
 	if ws == nil {
 		return fmt.Errorf("no e2e workspace for root %q", rootID)
 	}
+	if !ws.E2E {
+		return fmt.Errorf("workspace %q is not end-to-end encrypted", rootID)
+	}
 	dm := daemon.NewRuntime(daemon.Config{State: st, StatePath: d.StatePath, Hub: d.Hub})
 	dm.HydrateWorkspaceTrust(ws)
 	if _, err := dm.RemoveAnchor(ctx, ws, anchorID); err != nil {
@@ -284,20 +290,20 @@ func workspaceRemove(ctx context.Context, d hostagent.Deps, wsName, anchorID str
 // workspaceAdmit admits a pending join request identified by reqID in the
 // active (or named) workspace. It reconstructs an in-process daemon, hydrates
 // the trust graph, calls AdmitJoinRequest, removes the request from Pending,
-// and saves state.
-func workspaceAdmit(ctx context.Context, d hostagent.Deps, wsName, reqID string) error {
+// and saves state. Returns the new anchor count on success.
+func workspaceAdmit(ctx context.Context, d hostagent.Deps, wsName, reqID string) (int, error) {
 	st, err := agentstate.Load(d.StatePath)
 	if err != nil {
-		return fmt.Errorf("load state: %w", err)
+		return 0, fmt.Errorf("load state: %w", err)
 	}
 	rootID := st.ActiveWorkspace
 	if wsName != "" {
 		root, ok, err := hostagent.GetByName(d.StatePath, wsName)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if !ok {
-			return fmt.Errorf("no workspace named %q — create it first", wsName)
+			return 0, fmt.Errorf("no workspace named %q — create it first", wsName)
 		}
 		rootID = root.ID
 	}
@@ -309,7 +315,10 @@ func workspaceAdmit(ctx context.Context, d hostagent.Deps, wsName, reqID string)
 		}
 	}
 	if ws == nil {
-		return fmt.Errorf("no e2e workspace for root %q", rootID)
+		return 0, fmt.Errorf("no e2e workspace for root %q", rootID)
+	}
+	if !ws.E2E {
+		return 0, fmt.Errorf("workspace %q is not end-to-end encrypted", rootID)
 	}
 	// Find the pending request.
 	var pending *agentstate.PendingJoin
@@ -320,7 +329,7 @@ func workspaceAdmit(ctx context.Context, d hostagent.Deps, wsName, reqID string)
 		}
 	}
 	if pending == nil {
-		return fmt.Errorf("no pending request with id %q", reqID)
+		return 0, fmt.Errorf("no pending request with id %q", reqID)
 	}
 	dm := daemon.NewRuntime(daemon.Config{State: st, StatePath: d.StatePath, Hub: d.Hub})
 	dm.HydrateWorkspaceTrust(ws)
@@ -332,7 +341,7 @@ func workspaceAdmit(ctx context.Context, d hostagent.Deps, wsName, reqID string)
 		EncPub:       pending.EncPub,
 	}
 	if _, err := dm.AdmitJoinRequest(ctx, ws, req); err != nil {
-		return fmt.Errorf("admit: %w", err)
+		return 0, fmt.Errorf("admit: %w", err)
 	}
 	// Remove the admitted entry from Pending (in-place filter).
 	filtered := ws.Pending[:0]
@@ -343,9 +352,9 @@ func workspaceAdmit(ctx context.Context, d hostagent.Deps, wsName, reqID string)
 	}
 	ws.Pending = filtered
 	if err := agentstate.Save(d.StatePath, st); err != nil {
-		return fmt.Errorf("save state: %w", err)
+		return 0, fmt.Errorf("save state: %w", err)
 	}
-	return nil
+	return len(ws.Anchors), nil
 }
 
 // workspaceJoin joins an existing e2e workspace by posting a JoinRequest to the
@@ -606,11 +615,12 @@ func workspaceCmd(args []string) {
 			os.Exit(2)
 		}
 		reqID := positionals[0]
-		if err := workspaceAdmit(ctx, realDeps(), *wsp, reqID); err != nil {
+		anchorCount, err := workspaceAdmit(ctx, realDeps(), *wsp, reqID)
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "admit:", err)
 			os.Exit(1)
 		}
-		fmt.Printf("admitted %s\n", reqID)
+		fmt.Printf("admitted %s (workspace now has %d anchor(s))\n", reqID, anchorCount)
 	case "key-rotate":
 		// Parse: key-rotate [--workspace <name>]
 		fs := flag.NewFlagSet("workspace key-rotate", flag.ContinueOnError)

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
@@ -82,8 +83,12 @@ func TestWorkspaceAdmit(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := workspaceAdmit(ctx, d, "", "req-001"); err != nil {
+	anchorCount, err := workspaceAdmit(ctx, d, "", "req-001")
+	if err != nil {
 		t.Fatalf("workspaceAdmit: %v", err)
+	}
+	if anchorCount != 1 {
+		t.Fatalf("expected 1 anchor after admit, got %d", anchorCount)
 	}
 
 	// (a+b) Reload from disk and verify Anchors/Pending.
@@ -137,8 +142,43 @@ func TestWorkspaceAdmitUnknownReqID(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	err := workspaceAdmit(ctx, d, "", "does-not-exist")
+	_, err := workspaceAdmit(ctx, d, "", "does-not-exist")
 	if err == nil {
 		t.Fatal("expected error for unknown reqID, got nil")
+	}
+}
+
+// TestWorkspaceAdmitNonE2ERejectsWithGuard verifies that workspaceAdmit returns
+// a clear error when the resolved workspace is not end-to-end encrypted (M-4).
+func TestWorkspaceAdmitNonE2ERejectsWithGuard(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+
+	st := &agentstate.State{
+		ActiveWorkspace: "plain-root",
+		Agents:          []agentstate.Agent{{ID: "plain-root", Name: "plain-root"}},
+		Workspaces: []agentstate.Workspace{{
+			RootID: "plain-root",
+			E2E:    false, // not encrypted
+		}},
+	}
+	if err := agentstate.Save(statePath, st); err != nil {
+		t.Fatalf("agentstate.Save: %v", err)
+	}
+
+	fake := hubclient.NewFake()
+	d := hostagent.Deps{
+		Hub:       fake,
+		StatePath: statePath,
+		MintKey:   func() string { return "unused" },
+	}
+
+	ctx := context.Background()
+	_, err := workspaceAdmit(ctx, d, "", "any-req-id")
+	if err == nil {
+		t.Fatal("expected error for non-e2e workspace, got nil")
+	}
+	if !strings.Contains(err.Error(), "not end-to-end encrypted") {
+		t.Fatalf("expected 'not end-to-end encrypted' in error, got: %v", err)
 	}
 }
