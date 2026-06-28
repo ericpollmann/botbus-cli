@@ -245,11 +245,11 @@ func upsertAnchor(list []agentstate.AnchorRef, a agentstate.AnchorRef) []agentst
 	return append(list, a)
 }
 
-// sasFingerprint returns a short human-comparable string derived from
+// SASFingerprint returns a short human-comparable string derived from
 // sha256(signPub || encPub). The first 60 bits of the hash are encoded as
 // Crockford base32 and formatted as "XXXX-XXXX-XXXX" (14 chars total) for
 // out-of-band verification during the admission flow.
-func sasFingerprint(signPub, encPub []byte) string {
+func SASFingerprint(signPub, encPub []byte) string {
 	const crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 	h := sha256.New()
 	h.Write(signPub)

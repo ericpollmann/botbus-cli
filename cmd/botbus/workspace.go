@@ -18,6 +18,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
+	"github.com/ericpollmann/botbus-cli/fabric/daemon"
 	"github.com/ericpollmann/botbus-cli/fabric/hostagent"
 )
 
@@ -156,6 +157,46 @@ func workspaceUse(statePath, name string) error {
 	return setActiveWorkspace(statePath, root.ID)
 }
 
+// workspacePending loads the state file, resolves the active (or named)
+// workspace, and returns one formatted line per pending join request:
+// "<reqId>  <name>  <SAS>  <parentIntent>". wsName == "" ⇒ active workspace.
+func workspacePending(statePath, wsName string) (string, error) {
+	s, err := agentstate.Load(statePath)
+	if err != nil {
+		return "", fmt.Errorf("load state: %w", err)
+	}
+	rootID := s.ActiveWorkspace
+	if wsName != "" {
+		root, ok, err := hostagent.GetByName(statePath, wsName)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", fmt.Errorf("no workspace named %q — create it first", wsName)
+		}
+		rootID = root.ID
+	}
+	var ws *agentstate.Workspace
+	for i := range s.Workspaces {
+		if s.Workspaces[i].RootID == rootID {
+			ws = &s.Workspaces[i]
+			break
+		}
+	}
+	if ws == nil {
+		return "", fmt.Errorf("no e2e workspace for root %q", rootID)
+	}
+	if len(ws.Pending) == 0 {
+		return "", nil
+	}
+	var out string
+	for _, p := range ws.Pending {
+		sas := daemon.SASFingerprint(p.SignPub, p.EncPub)
+		out += fmt.Sprintf("%s\t%s\t%s\t%s\n", p.ReqID, p.Name, sas, p.ParentIntent)
+	}
+	return out, nil
+}
+
 // workspaceCmd handles `botbus workspace <sub> [args/flags]`.
 func workspaceCmd(args []string) {
 	if len(args) < 1 {
@@ -248,6 +289,24 @@ func workspaceCmd(args []string) {
 			fmt.Fprintf(tw, "%s\t%s\t%s\n", a.Name, a.Parent, a.InboxChannel)
 		}
 		tw.Flush()
+	case "pending":
+		fs := flag.NewFlagSet("workspace pending", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		wsp := fs.String("workspace", "", "workspace name (default: active workspace)")
+		if err := fs.Parse(args[1:]); err != nil {
+			workspaceUsage()
+			os.Exit(2)
+		}
+		out, err := workspacePending(agentstate.DefaultPath(), *wsp)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "pending:", err)
+			os.Exit(1)
+		}
+		if out == "" {
+			fmt.Println("no pending requests")
+		} else {
+			fmt.Print(out)
+		}
 	default:
 		workspaceUsage()
 		os.Exit(2)
@@ -255,5 +314,5 @@ func workspaceCmd(args []string) {
 }
 
 func workspaceUsage() {
-	fmt.Fprintln(os.Stderr, "usage: botbus workspace <create <name> [--e2e]|invite <user> --workspace <name>|use <name>|list>")
+	fmt.Fprintln(os.Stderr, "usage: botbus workspace <create <name> [--e2e]|invite <user> --workspace <name>|use <name>|list|pending [--workspace <name>]>")
 }
