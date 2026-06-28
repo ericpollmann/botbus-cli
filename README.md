@@ -268,9 +268,11 @@ changes automatically via the roster loop.
 
 A one-shot admin command (`botbus workspace key-rotate` / `admit` / `remove`)
 writes the change to `state.json`. The running daemon on that same host adopts it
-**live**: a background watcher polls `state.json` (~2s) and, on change, reconciles
-the in-memory workspace key/epoch/anchors/pending in place and attaches any new
-local agent — **without restarting or re-subscribing any hub connection**. The
+**live**: a background watcher wakes on an fsnotify event (instant, where
+supported) and on a periodic mtime poll (~2s, the always-on safety net /
+fallback), then reconciles the in-memory workspace key/epoch/anchors/pending in
+place and attaches any new local agent — **without restarting or re-subscribing
+any hub connection**. The
 inbox opener re-reads the workspace key per frame, so a rotation takes effect on
 the next inbound frame with no dropped subscription. Remote hosts adopt the same
 change via the encrypted roster channel as before.

@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"log"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
 	"github.com/ericpollmann/botbus-cli/fabric/agentstate"
+	"github.com/fsnotify/fsnotify"
 )
 
 // reconcileWorkspacesLocked updates in-memory workspaces to match `disk`,
@@ -131,32 +134,84 @@ var statePollEveryNs int64 = int64(2 * time.Second)
 func setStatePollEvery(d time.Duration) { atomic.StoreInt64(&statePollEveryNs, int64(d)) }
 func getStatePollEvery() time.Duration  { return time.Duration(atomic.LoadInt64(&statePollEveryNs)) }
 
-// runStateWatch polls statePath and, when its mtime changes (an external
-// one-shot CLI wrote it), reconciles the in-memory state via reloadFromDisk:
-// existing workspaces' key/epoch/anchors/pending are adopted in place and
-// genuinely-new agents are attached — WITHOUT cancelling or restarting any
-// inbox/roster/waiting-room loop, so live hub subscriptions are preserved. The
-// watcher never writes state.json. No-op when statePath is empty.
+// newStateWatcher constructs the fsnotify watcher; overridable in tests to
+// force the fsnotify-unavailable fallback (poll-only) path.
+var newStateWatcher = func() (*fsnotify.Watcher, error) { return fsnotify.NewWatcher() }
+
+// runStateWatch reconciles in-memory state with state.json whenever an external
+// one-shot CLI writes it. It wakes on two sources: an fsnotify event (low
+// latency, best-effort) and a periodic mtime poll (always on — the safety net
+// for platforms/filesystems where fsnotify is unavailable or silently drops
+// events, and the sole trigger if the watcher fails to start). Either source
+// runs the same idempotent reconcile, gated by mtime so a duplicate wake is a
+// cheap no-op. The watcher never writes state.json. No-op when statePath is
+// empty.
 func (d *Daemon) runStateWatch(ctx context.Context) {
 	if d.statePath == "" {
 		return
 	}
 	last := statMTime(d.statePath)
+	reconcile := func() {
+		m := statMTime(d.statePath)
+		if m.Equal(last) {
+			return
+		}
+		last = m
+		for _, a := range d.reloadFromDisk() {
+			d.attach(a) // idempotent; starts new agents' loops, no effect on existing
+		}
+	}
+
+	// Poll ticker — always on (safety net + fallback).
 	t := time.NewTicker(getStatePollEvery())
 	defer t.Stop()
+
+	// fsnotify trigger — best-effort. Watch the DIRECTORY (not the file) so the
+	// temp+rename agentstate.Save performs doesn't orphan the watch. On any setup
+	// error, proceed poll-only.
+	var events chan fsnotify.Event
+	var errs chan error
+	if w, err := newStateWatcher(); err != nil {
+		log.Printf("daemon: state watch fsnotify unavailable, polling only: %v", err)
+	} else {
+		dir := filepath.Dir(d.statePath)
+		if dir == "" {
+			dir = "."
+		}
+		if err := w.Add(dir); err != nil {
+			log.Printf("daemon: state watch cannot watch %s, polling only: %v", dir, err)
+			_ = w.Close()
+		} else {
+			defer w.Close()
+			events = w.Events
+			errs = w.Errors
+		}
+	}
+
+	base := filepath.Base(d.statePath)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			m := statMTime(d.statePath)
-			if m.Equal(last) {
+			reconcile()
+		case ev, ok := <-events:
+			if !ok {
+				events = nil // watcher closed; rely on the poll
 				continue
 			}
-			last = m
-			for _, a := range d.reloadFromDisk() {
-				d.attach(a) // idempotent; starts the new agent's loops, no effect on existing agents
+			// The dir also emits events for the .tmp/.bak siblings; react only to
+			// our state file. The mtime gate in reconcile() debounces multiple
+			// events from a single Save.
+			if filepath.Base(ev.Name) == base {
+				reconcile()
 			}
+		case err, ok := <-errs:
+			if !ok {
+				errs = nil
+				continue
+			}
+			log.Printf("daemon: state watch error: %v", err)
 		}
 	}
 }
