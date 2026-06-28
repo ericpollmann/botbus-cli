@@ -45,11 +45,13 @@ func TestParseMsg(t *testing.T) {
 		{"", "", "", false},
 		{": leading colon", "", ": leading colon", false}, // i==0 → no split, raw text
 		{"a:b", "", "a:b", false},                         // no space after colon
+		{"eric: hello [id 1]", "eric", "hello", true},     // ID suffix stripped from body
+		{"eric: hello [id zs]", "eric", "hello", true},
 	}
 	for _, c := range cases {
-		name, body, ok := parseMsg([]byte(c.in))
+		name, body, _, ok := parseMsgWithID([]byte(c.in))
 		if name != c.name || body != c.body || ok != c.ok {
-			t.Errorf("parseMsg(%q) = (%q, %q, %v), want (%q, %q, %v)",
+			t.Errorf("parseMsgWithID(%q) = (%q, %q, %v), want (%q, %q, %v)",
 				c.in, name, body, ok, c.name, c.body, c.ok)
 		}
 	}
