@@ -220,6 +220,30 @@ func rotateBackups(path string, current []byte) error {
 	return os.WriteFile(backupName(path, 0), current, 0o600)
 }
 
+// Clone returns a copy of the state with independent Agents and Workspaces
+// backing arrays — and independent per-workspace Key/Salt/AdminPub/AdminPriv/
+// Anchors/Pending slices — so structural mutation of one (append/Upsert, or
+// reassigning a workspace's fields) does not affect the other. Inner byte slices
+// of Agent (SignSeed/EncPriv) and of AnchorRef/PendingJoin elements (SignPub/
+// EncPub) are shared by element copy; they are set once and read-only thereafter,
+// so the sharing is safe. Do not mutate those bytes in place.
+func (s *State) Clone() *State {
+	c := *s
+	c.Agents = append([]Agent(nil), s.Agents...)
+	c.Workspaces = make([]Workspace, len(s.Workspaces))
+	for i, ws := range s.Workspaces {
+		w := ws
+		w.Key = append([]byte(nil), ws.Key...)
+		w.Salt = append([]byte(nil), ws.Salt...)
+		w.AdminPub = append([]byte(nil), ws.AdminPub...)
+		w.AdminPriv = append([]byte(nil), ws.AdminPriv...)
+		w.Anchors = append([]AnchorRef(nil), ws.Anchors...)
+		w.Pending = append([]PendingJoin(nil), ws.Pending...)
+		c.Workspaces[i] = w
+	}
+	return &c
+}
+
 // Get returns the agent with the given id and whether it was found.
 func (s *State) Get(id string) (Agent, bool) {
 	for _, a := range s.Agents {

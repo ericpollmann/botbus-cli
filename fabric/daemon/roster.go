@@ -62,15 +62,22 @@ func openRosterFrame(key [32]byte, b64 string) (rosterFrame, error) {
 // publishCert seals a cert frame under the workspace key and publishes it to
 // the workspace's roster channel.
 func (d *Daemon) publishCert(ctx context.Context, ws *agentstate.Workspace, c e2e.Cert) error {
-	key, err := keyArray(ws.Key)
+	// Snapshot mutable workspace fields under d.mu — the state watcher may rewrite
+	// ws.Key/ws.Epoch concurrently (it writes them under d.mu).
+	d.mu.Lock()
+	keyBytes := append([]byte(nil), ws.Key...)
+	epoch := ws.Epoch
+	roster := ws.Roster
+	d.mu.Unlock()
+	key, err := keyArray(keyBytes)
 	if err != nil {
 		return err
 	}
-	b64, err := sealRosterFrame(key, ws.Epoch, rosterFrame{Kind: "cert", Cert: &c})
+	b64, err := sealRosterFrame(key, epoch, rosterFrame{Kind: "cert", Cert: &c})
 	if err != nil {
 		return err
 	}
-	return d.hub.Publish(ctx, ws.Roster, b64)
+	return d.hub.Publish(ctx, roster, b64)
 }
 
 // ingestRosterFrame processes an inbound roster-channel frame.
@@ -84,7 +91,13 @@ func (d *Daemon) ingestRosterFrame(ws *agentstate.Workspace, b64 string) {
 		d.ingestRekeyGrant(ws, b64)
 		return
 	}
-	key, err := keyArray(ws.Key)
+	// Snapshot mutable workspace fields under d.mu — the state watcher may rewrite
+	// ws.Key concurrently (it writes under d.mu).
+	d.mu.Lock()
+	keyBytes := append([]byte(nil), ws.Key...)
+	adminPub := ed25519.PublicKey(append([]byte(nil), ws.AdminPub...))
+	d.mu.Unlock()
+	key, err := keyArray(keyBytes)
 	if err != nil {
 		log.Printf("roster: bad workspace key: %v", err)
 		return
@@ -104,7 +117,6 @@ func (d *Daemon) ingestRosterFrame(ws *agentstate.Workspace, b64 string) {
 		if len(f.AnchorBlob) == 0 {
 			return
 		}
-		adminPub := ed25519.PublicKey(ws.AdminPub)
 		if err := d.trust.applyAnchorSet(f.AnchorBlob, f.AnchorSig, adminPub); err != nil {
 			log.Printf("roster: applyAnchorSet failed: %v", err)
 		}
@@ -117,11 +129,20 @@ func (d *Daemon) ingestRekeyGrant(ws *agentstate.Workspace, js string) {
 	if err != nil || len(g.WrappedKey) == 0 {
 		return
 	}
+	// Snapshot the local anchor's enc-priv and the workspace admin pubkey under
+	// d.mu — reloadFromDisk/attach may append d.state.Agents concurrently.
+	d.mu.Lock()
 	ag, ok := d.state.AgentByID(g.AnchorID)
-	if !ok || len(ag.EncPriv) != 32 {
+	var encPriv []byte
+	if ok {
+		encPriv = append([]byte(nil), ag.EncPriv...)
+	}
+	adminPub := append([]byte(nil), ws.AdminPub...)
+	d.mu.Unlock()
+	if !ok || len(encPriv) != 32 {
 		return // not addressed to one of our local anchors
 	}
-	key, epoch, ok := ProcessRekey(g, ag.EncPriv, ws.AdminPub)
+	key, epoch, ok := ProcessRekey(g, encPriv, adminPub)
 	if !ok {
 		return
 	}

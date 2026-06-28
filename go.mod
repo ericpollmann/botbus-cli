@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/coder/websocket v1.8.13
 	github.com/ericpollmann/botbus-proto v0.4.0
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/mark3labs/mcp-go v0.54.0
 	golang.org/x/crypto v0.53.0
 	golang.org/x/sync v0.21.0
