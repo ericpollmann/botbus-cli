@@ -1,3 +1,6 @@
 /botbus
 *.cover
 .DS_Store
+
+# Subagent-driven-development scratch (briefs, reports, ledger, diff packages)
+.superpowers/
