@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "botbus": {
+      "command": "botbus",
+      "args": ["--channel", "--skip", "claude"]
+    }
+  }
+}

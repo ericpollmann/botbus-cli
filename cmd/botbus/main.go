@@ -30,7 +30,10 @@
 //	                                    # event (no blocking, no stdout
 //	                                    # scraping). Two-way via a `send`
 //	                                    # tool. --from NAME aliases --filter.
-//	                                    # See channel.go and the README.
+//	                                    # The id may come from $BOTBUS_CHANNEL
+//	                                    # instead of the positional arg (used by
+//	                                    # the plugin's .mcp.json). See channel.go,
+//	                                    # the plugin/ dir, and the README.
 //
 // File layout: ui.go owns the TUI (model/view/colors), ws.go owns the
 // WebSocket loop, channel.go owns the MCP channel server, this file is just
@@ -239,6 +242,19 @@ func main() {
 	if args.channel == "" && !args.monitor && !args.channelMode {
 		runConsole()
 		return
+	}
+
+	// In --channel mode the channel id may arrive via $BOTBUS_CHANNEL instead of
+	// a positional arg, so the plugin's static .mcp.json (`botbus --channel`)
+	// needs no id baked in. Resolve it here and refuse to continue without one —
+	// falling through to resolveURL("") would mint a fresh channel.
+	if args.channelMode {
+		id, ok := resolveChannelMode(args.channel, os.Getenv)
+		if !ok {
+			fmt.Fprintln(os.Stderr, "botbus --channel: pass a channel id or set BOTBUS_CHANNEL")
+			os.Exit(1)
+		}
+		args.channel = id
 	}
 
 	// Resolve the user's display name: explicit --name beats env beats default.

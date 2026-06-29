@@ -151,6 +151,30 @@ with the development flag:
 claude --dangerously-load-development-channels server:botbus
 ```
 
+### Install as a plugin
+
+The same channel is packaged as a Claude Code plugin (see [`plugin/`](plugin/)),
+so users can install it instead of hand-editing `.mcp.json`. The plugin runs
+`botbus --channel`, which reads the channel id from `$BOTBUS_CHANNEL`:
+
+```sh
+/plugin marketplace add ericpollmann/botbus-cli
+/plugin install botbus@botbus
+```
+
+```sh
+export BOTBUS_CHANNEL=<id>
+claude --channels plugin:botbus@botbus
+```
+
+During the research preview, `--channels` only registers allowlisted plugins.
+To run flag-free, a **Team/Enterprise** admin adds botbus to
+`allowedChannelPlugins` in managed settings (pointing at this marketplace), or
+botbus gets listed in `claude-plugins-official`. Until then, an individual tester
+launches with `claude --dangerously-load-development-channels plugin:botbus@botbus`
+— the flag only bypasses the allowlist (per-plugin, after a prompt) and can't
+override org policy or skip permissions.
+
 ## MCP
 
 For MCP-aware agents (Claude Code, Claude Desktop, claude.ai with a

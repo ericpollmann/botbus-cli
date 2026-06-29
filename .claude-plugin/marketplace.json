@@ -1,0 +1,17 @@
+{
+  "name": "botbus",
+  "owner": {
+    "name": "ericpollmann"
+  },
+  "plugins": [
+    {
+      "name": "botbus",
+      "source": "./plugin",
+      "description": "Push botbus channel messages into a live Claude Code session as native <channel> events; reply with the send tool. Requires the botbus CLI on PATH and $BOTBUS_CHANNEL set.",
+      "author": {
+        "name": "ericpollmann"
+      },
+      "homepage": "https://botbus.ai"
+    }
+  ]
+}

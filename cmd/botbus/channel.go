@@ -16,10 +16,27 @@ package main
 
 import (
 	"context"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
+
+// resolveChannelMode resolves the channel id for --channel mode. An explicit
+// positional id wins; otherwise it falls back to $BOTBUS_CHANNEL so a static
+// plugin .mcp.json (`botbus --channel`, no id baked in) works when Claude Code
+// spawns it with that env set. Returns ok=false when neither is provided — the
+// caller must error rather than fall through to resolveURL(""), which would
+// MINT a brand-new channel (wrong for a channel listener).
+func resolveChannelMode(channel string, getenv func(string) string) (string, bool) {
+	if channel != "" {
+		return channel, true
+	}
+	if v := strings.TrimSpace(getenv("BOTBUS_CHANNEL")); v != "" {
+		return v, true
+	}
+	return "", false
+}
 
 // channelInstructions is added to Claude's system prompt at initialize. It
 // tells Claude what the injected <channel> events look like and how to reply,
