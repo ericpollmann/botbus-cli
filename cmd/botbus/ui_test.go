@@ -231,17 +231,19 @@ func TestRenderSlash(t *testing.T) {
 }
 
 func TestNameColor(t *testing.T) {
-	// Deterministic — same name always same color, in range [0,16).
+	// Deterministic — same name always same color, always a valid index into
+	// palette (sum & 0x1F, mod 32; palette grew 16→32 in 72d7c27 to match the
+	// web/channel.html PAL — the bound tracks len(palette), not a magic number).
 	for _, n := range []string{"", "eric", "joe", "anon-123", "a long name with spaces"} {
 		c := nameColor(n)
-		if c < 0 || c >= 16 {
+		if c < 0 || c >= len(palette) {
 			t.Errorf("nameColor(%q) = %d, out of range", n, c)
 		}
 		if c != nameColor(n) {
 			t.Errorf("nameColor(%q) not deterministic", n)
 		}
 	}
-	// "abc" = 97+98+99 = 294; 294 & 0x0F = 6.
+	// "abc" = 97+98+99 = 294; 294 & 0x1F = 6.
 	if got := nameColor("abc"); got != 6 {
 		t.Errorf("nameColor(\"abc\") = %d, want 6", got)
 	}
