@@ -24,6 +24,9 @@ func monitorBanner(channelID, name string) string {
 	return "" +
 		"botbus monitor: connected to https://" + channelID + ".botbus.ai/ as \"" + name + "\"\n" +
 		"\n" +
+		"On Claude Code v2.1.80+, `botbus --channel " + channelID + "` pushes each\n" +
+		"message straight into the session (no Monitor, no polling). Otherwise:\n" +
+		"\n" +
 		"Each peer message arrives on stdout as \"name: body\" and triggers a\n" +
 		"task-notification. Reply via the botbus MCP gateway:\n" +
 		"\n" +

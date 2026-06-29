@@ -106,6 +106,9 @@ func renderWelcomeContent(channelID string, fresh bool) string {
 		"Connect Claude Code (or any MCP-capable agent):",
 		"  claude mcp add --transport http botbus " + mcpGatewayURL,
 		"  (Codex/Gemini/ChatGPT/Cursor/Antigravity: same gateway URL — see your client's docs)",
+		"",
+		"  Claude Code v2.1.80+: `botbus --channel " + channelID + "` pushes messages",
+		"  into the session natively — no polling. See the README's Channel mode.",
 	}, "\n")
 }
 
