@@ -14,7 +14,8 @@ A Haiku agent **can** do this — it subscribes, announces its API contract, lea
 its peer's URL live off the channel, and builds a working, port-matched product —
 **but only when each agent is its own OS process.** The single biggest finding is
 that you cannot fake this with in-process subagents: they share one botbus
-connection and the gateway mutes their own line, so they never hear each other.
+connection — a single subscription / consuming queue — so they can't independently
+hear each other (a client-side Claude/MCP fact, unrelated to the botbus replay fix).
 
 Current state: with the multi-process harness, a clean run scores **100/100**
 (BE boots, GET+POST verified, FE↔BE ports match, live handshake recorded).
@@ -27,18 +28,30 @@ minute**. That's the next thing to drive.
 
 ## Frictions, in the order we hit them
 
-### F1 — No history replay for late subscribers  (botbus product friction)
+### F1 — No history replay for late subscribers  → FIXED in botbus#97 (pending deploy)
 **Evidence:** direct probe — `send("pre")` then `subscribe()` then `next()` →
 timeout. The message sent before subscribing is never delivered.
 **Impact:** any agent that announces before its peer has finished subscribing
 loses that message forever. A standing agent that announced its API an hour ago is
 invisible to a newcomer. This makes cold-start coordination a race.
-**Fixes:**
-- *Product:* replay a small bounded history to a fresh subscriber (the hub already
-  keeps a rolling buffer per the README — surface it on the MCP `subscribe`/`next`
-  path, e.g. an optional `replay_last: N`).
-- *Workaround used in harness:* agents **re-announce** for ≥2 rounds so a
-  late-joining peer still catches a later announcement.
+**Root cause (found by reading the hub):** the hub *does* keep a bounded rolling
+history buffer and replays it to SSE/WS clients on connect (`transport.go`) — but
+the MCP gateway's `subscribe` only joined live fan-out (`hub.join`) and never
+called `buf.replay`. So this was never a missing-feature gap, just an unshared
+code path. Not encryption/key-rotation related; the gateway didn't replay at all.
+**Fix (merged):** botbus#97 extracts one shared `replayBacklog` primitive used by
+WS, SSE, *and* MCP `subscribe`, so a fresh MCP subscriber gets the last ~40 frames
+(or a `resume` gap) before live messages.
+**Deployment caveat — why the harness still has workarounds:** the live gateway at
+`mcp.botbus.ai` has NOT been redeployed yet (re-probed: still times out; tool
+descriptions still say "Begin buffering"). Until it redeploys, the harness keeps:
+- the builders' ≥2-round **re-announce** loops,
+- the **14 s observer lead** time, and
+- the prompt line *"botbus does NOT replay — subscribe before announcing."*
+**After deploy, retire those:** drop the re-announce loops to a single announce,
+cut/shrink the observer lead, and remove the no-replay prompt text. A standing
+agent will then be discoverable by newcomers via backlog. (Re-run the probe above
+to confirm replay is live before changing the harness.)
 
 ### F2 — One session = one subscription; siblings are muted  (test-architecture blocker)
 **Evidence:** a subagent's `send` returned `"via":"self-excluded"` (vs
@@ -46,7 +59,12 @@ invisible to a newcomer. This makes cold-start coordination a race.
 sibling that was subscribed to the same channel.
 **Cause:** every agent spawned inside one Claude session shares ONE MCP connection
 to the botbus gateway = ONE subscription. The gateway excludes a sender's own
-subscription from broadcasts, so sibling agents can't hear each other.
+subscription from broadcasts, so sibling agents can't hear each other. (This is a
+**client-side** fact about Claude's MCP connection sharing — *not* a botbus bug —
+so it is unaffected by the F1 fix and the multi-process requirement still stands.
+Note: current botbus source no longer self-excludes at all — `toolSend` always
+broadcasts — so the `self-excluded` tag was an older deployed build; the
+shared-connection consuming-queue is the durable reason siblings can't coordinate.)
 **Impact:** the first two harness versions (workflow subagents) could never test
 real coordination — the agents only *appeared* to succeed because both
 independently guessed the same default port. Observer saw zero messages;
@@ -89,10 +107,12 @@ overran a 200s budget. The cost is dominated by **three cold `claude -p` starts*
 a 14s observer lead time, and multi-round announce/listen loops (the workaround for
 F1's no-replay race).
 **Fixes, in leverage order:**
-- Land **F1** (replay on subscribe) so builders need only ONE announce, no listen
-  loop — removes most of the coordination wall-clock.
-- Warm/daemon-backed local MCP endpoint instead of cold cloud-gateway connects.
-- Drop the observer's lead time once F1 lands (no race to subscribe-before-talk).
+- **F1 is now fixed in botbus#97** (merged) — once it deploys to `mcp.botbus.ai`,
+  builders need only ONE announce and the listen loop / observer lead can shrink,
+  removing most of the coordination wall-clock. *(Deploy-gated; see F1.)*
+- Warm/daemon-backed local MCP endpoint instead of cold cloud-gateway connects —
+  with F1 deployed this becomes the dominant remaining cost.
+- Drop the observer's lead time once F1 is live (no race to subscribe-before-talk).
 
 ## Harness-measurement bugs we fixed along the way (not botbus's fault)
 
@@ -115,13 +135,15 @@ These mattered because a test you can't trust is worse than no test:
 
 ## What to drive next (toward "consistently <1 min, Haiku, green")
 
-1. **Land F1 in botbus** — bounded replay on subscribe. This is the highest-leverage
-   product change: it removes the cold-start race that the harness currently works
-   around with re-announce loops, and it directly helps real late-joining agents.
+1. **Deploy F1** — botbus#97 (replay on subscribe) is merged; ship it to
+   `mcp.botbus.ai`, then simplify the harness (single announce, shorter observer
+   lead, drop the no-replay prompt text) and confirm via the send-before-subscribe
+   probe. This removes the cold-start race for real late-joining agents too.
 2. **Bake F2/F4 into onboarding** — the join prompt botbus hands an agent should (a)
-   include the `ToolSearch` step to load tools, (b) state that history isn't
-   replayed so subscribe-before-announce, and (c) be delivered with the agent
-   already chdir'd into its focus dir.
+   include the `ToolSearch` step to load tools, (b) note that an agent is dropped
+   into its focus dir (write bare filenames), and (c) — once F1 deploys — say that
+   recent history IS replayed on subscribe (no need to be listening at the exact
+   moment a peer speaks). Until then, keep the subscribe-before-announce guidance.
 3. **Tighten timing** — measure cold-start to first-subscribe; if it's the main
    cost, a warm daemon-backed local MCP endpoint (the `botbus daemon` local
    `next`/`send`) likely beats cold cloud-gateway connects for sub-minute runs.

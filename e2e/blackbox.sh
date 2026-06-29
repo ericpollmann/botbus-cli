@@ -78,6 +78,11 @@ echo "Channel: $CH"
 # ── Prompts ──────────────────────────────────────────────────────────────────
 # Both builders use a re-announce loop so a late-subscribing peer still hears the
 # announcement on a later round — the only robust pattern given no history replay.
+# DEPLOY-GATED: botbus#97 adds replay-on-subscribe (merged, not yet on
+# mcp.botbus.ai). Once it deploys, drop the re-announce loops to a single announce,
+# shrink the observer lead, and remove the "does NOT replay" lines below. Confirm
+# replay is live first: send → subscribe → next should return the pre-sent message.
+# See FINDINGS.md F1.
 
 read -r -d '' BE_PROMPT <<EOF
 You are be-builder, joining a botbus channel to build a backend with a peer (fe-builder) live.
