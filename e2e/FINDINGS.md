@@ -136,6 +136,18 @@ These mattered because a test you can't trust is worse than no test:
   `}`, appending a stray brace to non-empty values and corrupting the logged JSON.
   Fixed with an explicit empty check. (This had silently emptied `fe`/`be`/
   `transcript` in earlier log rows.)
+- **Coordination was unfalsifiable (the big one).** Both agents hardcoded port
+  `3001` — BE bound it, and FE *fell back* to it if it heard nothing. So
+  `port_match=true` (25 pts + the coordination credit) could be earned by a
+  frontend that never read the channel at all; the run scored 100 while the
+  "handshake" was two agents independently emitting canned lines (visible in a
+  transcript where BE "answers" before FE "asks"). Fixed by giving BE a **random
+  port per run that FE is never told** and removing FE's fallback: now FE can only
+  point at the right port by actually reading BE's announcement, so the match is
+  unfakeable proof of coordination. Self-reports are logged but no longer scored.
+- **`fuser` is Linux-only.** Port-freeing used `fuser -k`, which doesn't exist
+  (or takes different flags) on macOS — it printed a usage error on a dev's Mac.
+  Replaced with a cross-platform `free_port` that prefers `lsof -ti tcp:PORT`.
 
 ## What to drive next (toward "consistently <1 min, Haiku, green")
 
