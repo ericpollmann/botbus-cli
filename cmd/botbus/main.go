@@ -23,8 +23,18 @@
 //	                                    # Add --filter NAME to only print
 //	                                    # messages from a specific sender.
 //
+//	botbus --channel <id> --skip NAME   # Claude Code Channel mode: run as a
+//	                                    # stdio MCP server that pushes each
+//	                                    # peer message into the live session
+//	                                    # as a notifications/claude/channel
+//	                                    # event (no blocking, no stdout
+//	                                    # scraping). Two-way via a `send`
+//	                                    # tool. --from NAME aliases --filter.
+//	                                    # See channel.go and the README.
+//
 // File layout: ui.go owns the TUI (model/view/colors), ws.go owns the
-// WebSocket loop, this file is just orchestration.
+// WebSocket loop, channel.go owns the MCP channel server, this file is just
+// orchestration.
 package main
 
 import (
@@ -148,10 +158,11 @@ func resolveName() string {
 // positional channel argument plus two flags. Anything unrecognized is
 // silently dropped, matching the rest of the CLI's minimalist arg handling.
 type cliArgs struct {
-	channel string
-	monitor bool
-	name    string
-	filter  string // --filter: only print messages from this sender
+	channel     string
+	monitor     bool
+	channelMode bool   // --channel: run as a Claude Code Channel (stdio MCP server)
+	name        string
+	filter      string // --filter / --from: only surface messages from this sender
 }
 
 // parseArgs walks os.Args[1:] and returns the parsed flags. --name (alias
@@ -170,12 +181,14 @@ func parseArgs(argv []string) cliArgs {
 		switch argv[i] {
 		case "--listen", "--monitor":
 			a.monitor = true
+		case "--channel":
+			a.channelMode = true
 		case "--name", "--skip":
 			if i+1 < len(argv) {
 				a.name = argv[i+1]
 				i++
 			}
-		case "--filter":
+		case "--filter", "--from":
 			if i+1 < len(argv) {
 				a.filter = argv[i+1]
 				i++
@@ -223,7 +236,7 @@ func main() {
 	// live dip-in chat, and onboarding. The positional-channel and --monitor
 	// paths below are unchanged. (Previously bare `botbus` minted a fresh chat
 	// channel; that behavior now lives only behind an explicit channel arg.)
-	if args.channel == "" && !args.monitor {
+	if args.channel == "" && !args.monitor && !args.channelMode {
 		runConsole()
 		return
 	}
@@ -234,10 +247,11 @@ func main() {
 		name = strings.ReplaceAll(args.name, ": ", "_")
 	}
 
-	// In monitor mode we're driven by another program (Monitor wrapping us);
-	// skip the interactive update prompt and the stderr audio-hint so stdout
-	// stays a clean stream and stdin stays unread.
-	if !args.monitor {
+	// In monitor and channel modes we're driven by another program (a Monitor
+	// task, or Claude Code spawning us as a stdio MCP server); skip the
+	// interactive update prompt and the stderr audio-hint so stdout stays a
+	// clean stream and stdin stays unread.
+	if !args.monitor && !args.channelMode {
 		checkUpdateInteractive()
 		if playerHint != "" {
 			fmt.Fprint(os.Stderr, playerHint)
@@ -268,9 +282,20 @@ func main() {
 	go runWSText(ctx, textURL, histBase, recv, send, states, seedCh)
 	go runWSAudio(ctx, audioURL, histBase, audio)
 
+	// Channel ID is the host minus ".botbus.ai", shared by both headless modes.
+	channelID := strings.TrimSuffix(hostFromURL(u), ".botbus.ai")
+
+	if args.channelMode {
+		// Claude Code Channel: serve MCP over stdio and push peer messages as
+		// claude/channel notifications. Blocks until stdin closes / signaled.
+		if err := runChannel(ctx, recv, audio, states, send, name, args.filter, channelID); err != nil {
+			fmt.Fprintln(os.Stderr, "channel:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if args.monitor {
-		// Channel ID is the host minus ".botbus.ai" — strip it for display.
-		channelID := strings.TrimSuffix(hostFromURL(u), ".botbus.ai")
 		fmt.Fprint(os.Stderr, monitorBanner(channelID, name))
 		runMonitor(ctx, recv, audio, states, name, args.filter)
 		return
