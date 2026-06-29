@@ -84,11 +84,16 @@ announced port (`used_default_url=false`), product worked.
 `server.js` into the harness's own cwd instead. `file_written` was reported true,
 but verification found nothing at the expected path. Non-deterministic across runs
 (Haiku variance).
-**Fixes:**
-- *Harness:* launch each agent **with its cwd set to its target directory**, and
-  ask for a bare filename. A relative write then always lands correctly. This
-  mirrors what botbus itself should do: `chdir` an agent into its `--focus`
-  directory rather than trusting it to write to the right place.
+**Fix (closed, launcher-side):** launch each agent **with its cwd set to its
+target directory** and ask for a bare filename — a relative write then always
+lands correctly. This is the right and complete fix: **whoever spawns the agent
+owns its cwd**, and that's not botbus. botbus-cli never `exec`s the agent process
+(grep: no `exec.Command` for an agent), and `--focus` is a free-text
+"platform focus-area description," not a path — so there is no botbus code path
+to `chdir`. An earlier draft of this note implied botbus should chdir an agent
+into its `--focus` dir; that mechanism doesn't exist and isn't botbus's job. If a
+future launcher (a `botbus run`-style spawner) is ever added, *that* is where a
+real `--workdir` chdir would belong.
 
 ### F5 — Silent wrong-default when coordination fails  (agent + product friction)
 **Evidence:** in the sequential (broken) harness, when FE couldn't hear BE it fell
