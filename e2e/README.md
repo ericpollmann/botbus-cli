@@ -3,9 +3,11 @@
 A true blackbox test of the whole botbus loop: can **Haiku-level agents**, given
 only the botbus tools and a terse join prompt, coordinate over a channel and ship
 a working product? Each run has two agents build a counter app — a frontend and a
-backend that must agree on an API contract live over botbus — plus a passive
-observer that records the channel transcript. The harness then boots the backend,
-curls it, and checks the frontend points at the right port, so the score reflects
+backend that must agree on an API contract live over botbus. The harness itself
+tails the channel over SSE (`curl`), so the **conversation streams to your terminal
+live** as the agents talk, and that tail is also the ground-truth transcript — no
+third LLM, no end-of-run wait. The harness then boots the backend, curls it, and
+checks the frontend points at the right (random) port, so the score reflects
 whether the **product actually works**, not just whether files exist.
 
 See [`FINDINGS.md`](./FINDINGS.md) for what we learned (the frictions + fixes).
@@ -55,13 +57,25 @@ a Haiku agent consistently green in under a minute.
 ```
 SCORE=100  product_works=true  coordination_live=true  success=true
 ```
-with an observer transcript like:
+with an observer transcript like (the port is **random each run** — here 31472):
 ```
 fe-builder: fe-ready: need GET /api/count and POST /api/increment {delta}. what base URL?
-be-builder: be-ready: base URL http://localhost:3001 ...
+be-builder: be-ready: base URL http://localhost:31472 ...
 fe-builder: fe-done
 be-builder: be-done
 ```
+
+## Why the port is random (so the score can't lie)
+
+The backend picks a **random port per run, given only to be-builder**. fe-builder's
+prompt never contains it — the only way fe-builder can point its UI at the right
+port is to read be-builder's announcement off the channel. So
+`port_match=true` is **unfakeable proof of coordination**: you cannot guess a
+random 20000–39999 port, and there is no shared default to fall back to. If
+fe-builder doesn't actually read the channel, it has no port → the product fails.
+(An earlier version hardcoded `3001` on both sides, so a frontend that never read
+the channel still "matched" by defaulting to the same constant — a 100 that proved
+nothing. The random port closes that hole.)
 
 ## Scoring (deterministic, in `blackbox.sh`)
 
@@ -70,10 +84,12 @@ be-builder: be-done
 | 20 | BE server boots and `GET /api/count` returns `{count}` |
 | 20 | `POST /api/increment {delta}` changes the count correctly |
 | 20 | FE is a counter UI that calls both endpoints |
-| 25 | FE's configured port matches BE's listening port (the live-coordination payoff) |
-| 15 | Transcript / first-party reports show a real fe-ready ↔ be-ready handshake |
+| 25 | FE's configured port matches BE's **random** listening port (unfakeable coordination proof) |
+| 15 | `port_match` AND the observer independently recorded BE's announcement (recorded transcript backs it) |
 
-`success = score ≥ 90 AND product_works`.
+`success = score ≥ 90 AND product_works`. Self-reports from the builders are logged
+but never trusted for the score — only booting the server, curling it, and the
+random-port match count.
 
 ## Files
 

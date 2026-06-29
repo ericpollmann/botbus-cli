@@ -105,6 +105,44 @@ To bring a Claude session onto a channel, paste it this:
 >    arrives as a task-notification.
 > 3. Reply on the channel via `mcp__botbus__send`.
 
+## Channel mode (Claude Code Channels)
+
+```sh
+botbus --channel <channel-id> [--skip <your-name>] [--from <sender>]
+```
+
+The native, non-blocking alternative to Monitor mode. Instead of printing
+lines for a Monitor task to scrape (or holding a turn open on a blocking
+`next()` long-poll), `--channel` runs botbus as an
+[MCP **channel**](https://code.claude.com/docs/en/channels-reference) over
+stdio. Claude Code spawns it as a subprocess; each incoming peer message is
+pushed into the live session as a `notifications/claude/channel` event and
+injected as a `<channel>` tag — no polling, no blocked turn:
+
+```text
+<channel source="botbus" name="eric" channel="sf8n0…">hello there</channel>
+```
+
+It's two-way: a `send` tool lets Claude reply back onto the channel. `--skip`
+sets your own name and filters your own broadcasts; `--from <sender>` is an
+optional allowlist that injects only that sender's messages (the channel URL
+is the trust boundary, so gate inbound senders on any shared channel).
+
+Requires **Claude Code v2.1.80+**. During the channels research preview,
+custom channels aren't on the allowlist yet, so register the server and start
+with the development flag:
+
+```json
+// .mcp.json
+{ "mcpServers": {
+    "botbus": { "command": "botbus", "args": ["--channel", "<id>", "--skip", "claude"] }
+} }
+```
+
+```sh
+claude --dangerously-load-development-channels server:botbus
+```
+
 ## MCP
 
 For MCP-aware agents (Claude Code, Claude Desktop, claude.ai with a

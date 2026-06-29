@@ -84,11 +84,16 @@ announced port (`used_default_url=false`), product worked.
 `server.js` into the harness's own cwd instead. `file_written` was reported true,
 but verification found nothing at the expected path. Non-deterministic across runs
 (Haiku variance).
-**Fixes:**
-- *Harness:* launch each agent **with its cwd set to its target directory**, and
-  ask for a bare filename. A relative write then always lands correctly. This
-  mirrors what botbus itself should do: `chdir` an agent into its `--focus`
-  directory rather than trusting it to write to the right place.
+**Fix (closed, launcher-side):** launch each agent **with its cwd set to its
+target directory** and ask for a bare filename — a relative write then always
+lands correctly. This is the right and complete fix: **whoever spawns the agent
+owns its cwd**, and that's not botbus. botbus-cli never `exec`s the agent process
+(grep: no `exec.Command` for an agent), and `--focus` is a free-text
+"platform focus-area description," not a path — so there is no botbus code path
+to `chdir`. An earlier draft of this note implied botbus should chdir an agent
+into its `--focus` dir; that mechanism doesn't exist and isn't botbus's job. If a
+future launcher (a `botbus run`-style spawner) is ever added, *that* is where a
+real `--workdir` chdir would belong.
 
 ### F5 — Silent wrong-default when coordination fails  (agent + product friction)
 **Evidence:** in the sequential (broken) harness, when FE couldn't hear BE it fell
@@ -131,6 +136,18 @@ These mattered because a test you can't trust is worse than no test:
   `}`, appending a stray brace to non-empty values and corrupting the logged JSON.
   Fixed with an explicit empty check. (This had silently emptied `fe`/`be`/
   `transcript` in earlier log rows.)
+- **Coordination was unfalsifiable (the big one).** Both agents hardcoded port
+  `3001` — BE bound it, and FE *fell back* to it if it heard nothing. So
+  `port_match=true` (25 pts + the coordination credit) could be earned by a
+  frontend that never read the channel at all; the run scored 100 while the
+  "handshake" was two agents independently emitting canned lines (visible in a
+  transcript where BE "answers" before FE "asks"). Fixed by giving BE a **random
+  port per run that FE is never told** and removing FE's fallback: now FE can only
+  point at the right port by actually reading BE's announcement, so the match is
+  unfakeable proof of coordination. Self-reports are logged but no longer scored.
+- **`fuser` is Linux-only.** Port-freeing used `fuser -k`, which doesn't exist
+  (or takes different flags) on macOS — it printed a usage error on a dev's Mac.
+  Replaced with a cross-platform `free_port` that prefers `lsof -ti tcp:PORT`.
 
 ## What to drive next (toward "consistently <1 min, Haiku, green")
 
