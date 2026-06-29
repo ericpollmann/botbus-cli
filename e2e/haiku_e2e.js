@@ -14,9 +14,10 @@
 //   Workflow({ scriptPath: 'e2e/haiku_e2e.js' })
 //
 // Run in a loop (every 30 min):
-//   /loop 30m Workflow({ scriptPath: 'e2e/haiku_e2e.js' }) then commit e2e/friction_log.jsonl
+//   /loop 30m Workflow({ scriptPath: 'e2e/haiku_e2e.js' })
 //
-// Friction log: e2e/friction_log.jsonl — one JSON line per run.
+// Friction log: e2e/friction_log.jsonl — one JSON line per run (gitignored;
+// generated run output, not source).
 // Over time, watch the score column trend upward and friction_points shrink.
 
 export const meta = {

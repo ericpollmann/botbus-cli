@@ -81,6 +81,6 @@ be-builder: be-done
 blackbox.sh          the real multi-process harness (authoritative)
 haiku_e2e.js         single-session Workflow smoke test (tool-driving only)
 analyze_friction.js  trend report across friction_log.jsonl
-friction_log.jsonl   one JSON line per run (committed so the trend survives)
+friction_log.jsonl   one JSON line per run (gitignored — generated run output)
 FINDINGS.md          the frictions we found, with evidence and fixes
 ```
