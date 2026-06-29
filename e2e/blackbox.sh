@@ -76,30 +76,27 @@ if [ -z "$CH" ]; then echo "FATAL: could not mint channel"; cat "$RUN_DIR/mint.j
 echo "Channel: $CH"
 
 # ── Prompts ──────────────────────────────────────────────────────────────────
-# Both builders use a re-announce loop so a late-subscribing peer still hears the
-# announcement on a later round — the only robust pattern given no history replay.
-# DEPLOY-GATED: botbus#97 adds replay-on-subscribe (merged, not yet on
-# mcp.botbus.ai). Once it deploys, drop the re-announce loops to a single announce,
-# shrink the observer lead, and remove the "does NOT replay" lines below. Confirm
-# replay is live first: send → subscribe → next should return the pre-sent message.
-# See FINDINGS.md F1.
+# botbus replays recent channel history on subscribe (botbus#97, live on
+# mcp.botbus.ai), so a peer's announcement is delivered whether it was sent before
+# OR after this agent subscribes. That removes the cold-start race: each builder
+# announces ONCE and listens, instead of the old re-announce loop. (History: this
+# used to need ≥2 re-announce rounds + a long observer lead; see FINDINGS.md F1.)
 
 read -r -d '' BE_PROMPT <<EOF
 You are be-builder, joining a botbus channel to build a backend with a peer (fe-builder) live.
 1. ToolSearch query 'select:mcp__botbus__set_name,mcp__botbus__subscribe,mcp__botbus__send,mcp__botbus__next'.
 2. mcp__botbus__set_name name='be-builder'.
-3. mcp__botbus__subscribe channel='$CH'. (botbus does NOT replay older messages, so subscribe before sending.)
+3. mcp__botbus__subscribe channel='$CH'. (On subscribe you receive recent channel history, so you won't miss anything fe-builder already said.)
 4. Write a file named exactly server.js in your CURRENT working directory (use the bare name server.js,
    not an absolute path): a Node.js http-module counter server on port $BE_PORT,
    in-memory counter starting at 0, CORS enabled, runnable with exactly 'node server.js' (NO npm install):
      GET  /api/count      -> {"count":N}
      POST /api/increment  body {"delta":N} -> {"count":N}   (delta may be negative)
-5. Coordinate: do at least 2 and up to 4 rounds (do NOT stop before round 2, so a late-joining
-   listener still catches an announcement): mcp__botbus__send channel='$CH'
+5. Announce ONCE: mcp__botbus__send channel='$CH'
    text='be-ready: base URL http://localhost:$BE_PORT  GET /api/count  POST /api/increment {delta}'
-   then mcp__botbus__next channel='$CH' timeout_seconds=8 (record any fe-builder message). After round 2,
-   stop once you have heard fe-builder.
-6. Finish: mcp__botbus__send channel='$CH' text='be-done'.
+6. Listen for fe-builder: call mcp__botbus__next channel='$CH' timeout_seconds=10 up to 3 times; record any
+   fe-builder message (history replay means you'll see its fe-ready even if it was sent before you subscribed).
+7. Finish: mcp__botbus__send channel='$CH' text='be-done'.
 End your reply with one line exactly: RESULT_JSON:{"subscribed":true|false,"announced":true|false,"peer_heard":true|false,"file_written":true|false}
 EOF
 
@@ -108,16 +105,16 @@ You are fe-builder, joining a botbus channel to build a frontend with a peer (be
 The backend's base URL is unknown until be-builder announces it on the channel — you must learn it.
 1. ToolSearch query 'select:mcp__botbus__set_name,mcp__botbus__subscribe,mcp__botbus__send,mcp__botbus__next'.
 2. mcp__botbus__set_name name='fe-builder'.
-3. mcp__botbus__subscribe channel='$CH'. (botbus does NOT replay older messages, so subscribe before listening.)
-4. Coordinate: do at least 2 and up to 5 rounds (do NOT stop before round 2): mcp__botbus__send channel='$CH'
+3. mcp__botbus__subscribe channel='$CH'. (On subscribe you receive recent channel history, so be-builder's URL announcement reaches you whether it was sent before or after you subscribed.)
+4. Announce ONCE: mcp__botbus__send channel='$CH'
    text='fe-ready: need GET /api/count and POST /api/increment {delta}. what base URL?'
-   then mcp__botbus__next channel='$CH' timeout_seconds=8. Look for a be-builder message containing a base URL
-   like http://localhost:PORT. After round 2, stop as soon as you capture that URL.
-5. Write a file named exactly index.html in your CURRENT working directory (bare name, not an absolute
+5. Listen for the backend URL: call mcp__botbus__next channel='$CH' timeout_seconds=10 in a loop up to 4 times.
+   Look for a be-builder message containing a base URL like http://localhost:PORT; stop as soon as you capture it.
+6. Write a file named exactly index.html in your CURRENT working directory (bare name, not an absolute
    path): vanilla HTML/CSS/JS counter (starts at 0; buttons +1, -1, Reset).
    Set the JS const API_BASE to the EXACT base URL be-builder announced. ONLY if you never received one,
    use http://localhost:$BE_PORT. GET \\\${API_BASE}/api/count to load; POST \\\${API_BASE}/api/increment {delta}.
-6. Finish: mcp__botbus__send channel='$CH' text='fe-done'.
+7. Finish: mcp__botbus__send channel='$CH' text='fe-done'.
 End your reply with one line exactly: RESULT_JSON:{"subscribed":true|false,"announced":true|false,"peer_heard":true|false,"file_written":true|false,"used_default_url":true|false}
 EOF
 
@@ -131,11 +128,14 @@ You are observer, a passive recorder on a botbus channel. Build nothing.
 End your reply with one line exactly: RESULT_JSON:{"transcript":["name: body", ...],"message_count":N}
 EOF
 
-# ── Launch: observer first so it is subscribed before the builders talk ───────
+# ── Launch ───────────────────────────────────────────────────────────────────
+# A small head start lets the observer's process come up first, but it no longer
+# has to be subscribed before the builders talk: history replay on subscribe means
+# a late observer still captures the last ~40 frames (the whole short exchange).
 echo "Launching observer…"
 run_agent observer "$OBSERVER_TOOLS" "$OBS_PROMPT" "$RUN_DIR" &
 OBS_BG=$!
-sleep 14   # claude cold start + ToolSearch + subscribe; observer must be live before builders talk
+sleep 3
 echo "Launching be-builder + fe-builder concurrently…"
 run_agent be "$BUILDER_TOOLS" "$BE_PROMPT" "$WORK_DIR/be" &
 BE_BG=$!

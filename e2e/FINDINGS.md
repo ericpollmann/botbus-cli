@@ -28,9 +28,13 @@ minute**. That's the next thing to drive.
 
 ## Frictions, in the order we hit them
 
-### F1 — No history replay for late subscribers  → FIXED in botbus#97 (pending deploy)
-**Evidence:** direct probe — `send("pre")` then `subscribe()` then `next()` →
-timeout. The message sent before subscribing is never delivered.
+### F1 — No history replay for late subscribers  → FIXED & DEPLOYED (botbus#97)
+**Status:** resolved and live on `mcp.botbus.ai`. Confirming probe now returns the
+pre-sent message: `send("x")` → `subscribe()` → `next()` → `"x [id 1]"`. The harness
+workarounds below have been retired (single announce, 3 s observer lead, no
+"does-not-replay" prompt text); it still scores 100/100, faster.
+**Original evidence:** direct probe — `send("pre")` then `subscribe()` then `next()` →
+timeout. The message sent before subscribing was never delivered.
 **Impact:** any agent that announces before its peer has finished subscribing
 loses that message forever. A standing agent that announced its API an hour ago is
 invisible to a newcomer. This makes cold-start coordination a race.
@@ -42,16 +46,11 @@ code path. Not encryption/key-rotation related; the gateway didn't replay at all
 **Fix (merged):** botbus#97 extracts one shared `replayBacklog` primitive used by
 WS, SSE, *and* MCP `subscribe`, so a fresh MCP subscriber gets the last ~40 frames
 (or a `resume` gap) before live messages.
-**Deployment caveat — why the harness still has workarounds:** the live gateway at
-`mcp.botbus.ai` has NOT been redeployed yet (re-probed: still times out; tool
-descriptions still say "Begin buffering"). Until it redeploys, the harness keeps:
-- the builders' ≥2-round **re-announce** loops,
-- the **14 s observer lead** time, and
-- the prompt line *"botbus does NOT replay — subscribe before announcing."*
-**After deploy, retire those:** drop the re-announce loops to a single announce,
-cut/shrink the observer lead, and remove the no-replay prompt text. A standing
-agent will then be discoverable by newcomers via backlog. (Re-run the probe above
-to confirm replay is live before changing the harness.)
+**Workarounds retired (post-deploy):** with replay live, the harness now has each
+builder **announce once** (was: ≥2 re-announce rounds), a **3 s** observer lead
+(was: 14 s), and prompts that tell agents history IS replayed on subscribe. A
+standing agent is now discoverable by newcomers via backlog. 3/3 runs still score
+100, and each is faster (fewer coordination rounds).
 
 ### F2 — One session = one subscription; siblings are muted  (test-architecture blocker)
 **Evidence:** a subagent's `send` returned `"via":"self-excluded"` (vs
