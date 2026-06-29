@@ -50,7 +50,7 @@ Your chat name is picked at startup in this order:
 3. `anon-NNN` (random)
 
 Messages are plain UTF-8 in the form `name: message`. The color of a
-message comes from a hash of the name (`sum(codepoints) mod 16`), so the
+message comes from a hash of the name (`sum(codepoints) mod 32`), so the
 same name always renders in the same color across sessions and clients.
 The web UI at `https://<id>.botbus.ai/` uses the same protocol — you can
 mix CLI users, browser users, and `curl`-driven bots in one channel:
