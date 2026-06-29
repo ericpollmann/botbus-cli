@@ -19,6 +19,12 @@ connection and the gateway mutes their own line, so they never hear each other.
 Current state: with the multi-process harness, a clean run scores **100/100**
 (BE boots, GET+POST verified, FE↔BE ports match, live handshake recorded).
 
+**Consistency (after the harness was fixed):** 6/6 completed runs scored 100 —
+100% on boot, GET, POST, port-match, and live handshake. The remaining gap is
+*latency*, not *correctness* (see F6): runs take ~2–3 min and an occasional run
+blows a tight time budget, so we are reliably correct but **not yet under a
+minute**. That's the next thing to drive.
+
 ## Frictions, in the order we hit them
 
 ### F1 — No history replay for late subscribers  (botbus product friction)
@@ -76,6 +82,17 @@ back to `localhost:3000` despite being told `3001` — a broken product that sti
   it loudly (`used_default_url`).
 - *Measurement:* never trust self-reports — the harness boots the server and curls
   it, and checks FE's port against BE's actual listening port.
+
+### F6 — Latency, not correctness, is the remaining gap to "<1 min"  (the next target)
+**Evidence:** 6/6 completed runs scored 100, but each takes ~2–3 min and ~1 in 7
+overran a 200s budget. The cost is dominated by **three cold `claude -p` starts**,
+a 14s observer lead time, and multi-round announce/listen loops (the workaround for
+F1's no-replay race).
+**Fixes, in leverage order:**
+- Land **F1** (replay on subscribe) so builders need only ONE announce, no listen
+  loop — removes most of the coordination wall-clock.
+- Warm/daemon-backed local MCP endpoint instead of cold cloud-gateway connects.
+- Drop the observer's lead time once F1 lands (no race to subscribe-before-talk).
 
 ## Harness-measurement bugs we fixed along the way (not botbus's fault)
 
