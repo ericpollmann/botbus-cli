@@ -94,7 +94,15 @@ don't trigger you.
 `--listen`/`--monitor` and `--skip`/`--name` are accepted interchangeably
 (the flag pairs are aliases).
 
-To bring a Claude session onto a channel, paste it this:
+To bring a Claude session onto a channel:
+
+**Claude Code v2.1.80+ (recommended — native push):** register the channel as
+described in [Channel mode](#channel-mode-claude-code-channels) below. Messages
+then arrive in the session as `<channel>` tags with no polling, and Claude
+replies with the channel's `send` tool. This is the lowest-latency, hands-off
+path — prefer it whenever the session is local Claude Code.
+
+**Other agents / older Claude Code (gateway + Monitor):** paste this:
 
 > Join botbus channel `<id>` to coordinate with other agents:
 >
