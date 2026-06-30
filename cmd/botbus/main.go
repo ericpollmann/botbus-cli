@@ -23,17 +23,19 @@
 //	                                    # Add --filter NAME to only print
 //	                                    # messages from a specific sender.
 //
-//	botbus --channel <id> --skip NAME   # Claude Code Channel mode: run as a
-//	                                    # stdio MCP server that pushes each
-//	                                    # peer message into the live session
-//	                                    # as a notifications/claude/channel
-//	                                    # event (no blocking, no stdout
-//	                                    # scraping). Two-way via a `send`
-//	                                    # tool. --from NAME aliases --filter.
-//	                                    # The id may come from $BOTBUS_CHANNEL
-//	                                    # instead of the positional arg (used by
-//	                                    # the plugin's .mcp.json). See channel.go,
-//	                                    # the plugin/ dir, and the README.
+//	botbus --channel [ids…] --skip NAME # Claude Code Channel mode: run as a
+//	                                    # stdio MCP server that pushes peer
+//	                                    # messages into the live session as
+//	                                    # notifications/claude/channel events
+//	                                    # (no blocking, no stdout scraping).
+//	                                    # Owns a dynamic set of channels via the
+//	                                    # subscribe/unsubscribe/send/set_name/
+//	                                    # list/new_channel tools (no next()).
+//	                                    # Seeds from the positional ids and/or
+//	                                    # $BOTBUS_CHANNEL (comma/space separated;
+//	                                    # may be empty — add channels live).
+//	                                    # --from NAME aliases --filter. See
+//	                                    # channel.go, plugin/, and the README.
 //
 // File layout: ui.go owns the TUI (model/view/colors), ws.go owns the
 // WebSocket loop, channel.go owns the MCP channel server, this file is just
@@ -244,19 +246,6 @@ func main() {
 		return
 	}
 
-	// In --channel mode the channel id may arrive via $BOTBUS_CHANNEL instead of
-	// a positional arg, so the plugin's static .mcp.json (`botbus --channel`)
-	// needs no id baked in. Resolve it here and refuse to continue without one —
-	// falling through to resolveURL("") would mint a fresh channel.
-	if args.channelMode {
-		id, ok := resolveChannelMode(args.channel, os.Getenv)
-		if !ok {
-			fmt.Fprintln(os.Stderr, "botbus --channel: pass a channel id or set BOTBUS_CHANNEL")
-			os.Exit(1)
-		}
-		args.channel = id
-	}
-
 	// Resolve the user's display name: explicit --name beats env beats default.
 	name := resolveName()
 	if args.name != "" {
@@ -274,15 +263,30 @@ func main() {
 		}
 	}
 
+	ctx, cancel := signal.NotifyContext(context.Background(),
+		syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	// Claude Code Channel mode: a stdio MCP server that owns a *dynamic* set of
+	// channel subscriptions and pushes each peer message into the session as a
+	// claude/channel notification. It manages its own per-channel WebSockets, so
+	// it bypasses the single-channel WS setup below. The seed set comes from the
+	// positional arg and/or $BOTBUS_CHANNEL (comma/space separated) and may be
+	// empty — channels are added live via the subscribe tool. It never mints.
+	if args.channelMode {
+		seeds := parseChannelSeeds(args.channel, os.Getenv("BOTBUS_CHANNEL"))
+		if err := runChannelManager(ctx, seeds, name, args.filter); err != nil {
+			fmt.Fprintln(os.Stderr, "channel:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	u, err := resolveURL(args.channel)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "resolve:", err)
 		os.Exit(1)
 	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(),
-		syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 
 	recv := make(chan []byte, 64)
 	audio := make(chan []byte, 8)
@@ -298,18 +302,8 @@ func main() {
 	go runWSText(ctx, textURL, histBase, recv, send, states, seedCh)
 	go runWSAudio(ctx, audioURL, histBase, audio)
 
-	// Channel ID is the host minus ".botbus.ai", shared by both headless modes.
+	// Channel ID is the host minus ".botbus.ai" (monitor banner display).
 	channelID := strings.TrimSuffix(hostFromURL(u), ".botbus.ai")
-
-	if args.channelMode {
-		// Claude Code Channel: serve MCP over stdio and push peer messages as
-		// claude/channel notifications. Blocks until stdin closes / signaled.
-		if err := runChannel(ctx, recv, audio, states, send, name, args.filter, channelID); err != nil {
-			fmt.Fprintln(os.Stderr, "channel:", err)
-			os.Exit(1)
-		}
-		return
-	}
 
 	if args.monitor {
 		fmt.Fprint(os.Stderr, monitorBanner(channelID, name))
