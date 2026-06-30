@@ -21,10 +21,13 @@ Current state: with the multi-process harness, a clean run scores **100/100**
 (BE boots, GET+POST verified, FE↔BE ports match, live handshake recorded).
 
 **Consistency (after the harness was fixed):** 6/6 completed runs scored 100 —
-100% on boot, GET, POST, port-match, and live handshake. The remaining gap is
-*latency*, not *correctness* (see F6): runs take ~2–3 min and an occasional run
-blows a tight time budget, so we are reliably correct but **not yet under a
-minute**. That's the next thing to drive.
+100% on boot, GET, POST, port-match, and live handshake. After removing the
+artificial latency (cold mint agent, blocking listen loops; see the measurement
+notes), a clean run is now **~60s** and the conversation **streams live** to the
+terminal as the agents talk. The remaining ~60s is the two parallel Haiku agents
+doing real LLM turns (ToolSearch, subscribe, write the file, send) — the bus
+itself is sub-second. Driving below a minute now means fewer/cheaper agent turns,
+not bus or harness work.
 
 ## Frictions, in the order we hit them
 
@@ -148,6 +151,24 @@ These mattered because a test you can't trust is worse than no test:
 - **`fuser` is Linux-only.** Port-freeing used `fuser -k`, which doesn't exist
   (or takes different flags) on macOS — it printed a usage error on a dev's Mac.
   Replaced with a cross-platform `free_port` that prefers `lsof -ti tcp:PORT`.
+- **mawk buffers a pipe → empty transcript + no live streaming.** The SSE tail
+  parsed frames with `awk … fflush()`, but the default Linux `awk` is **mawk**,
+  which buffers stdout to a pipe and only flushes at EOF (proven: 3 lines emitted
+  1s apart all arrived together at EOF). The harness stops the tail by `kill`,
+  *before* EOF, so every buffered message was lost — the transcript came back empty
+  and `coordination_live` scored a false negative even on a perfect run. Fixed by
+  parsing SSE in **bash** (`read` delivers each line immediately; we write it at
+  once), so messages stream live and are on disk before the tail is stopped. Also
+  added Last-Event-ID reconnect (idle proxies drop a quiet SSE connection) with
+  dedupe-by-event-id (botbus replays seen frames on resume).
+- **Artificial latency: cold mint agent + blocking listen loops.** A run took
+  ~3 min, but the bus is sub-second. Two harness costs, not bus costs: (1) minting
+  the channel was a whole cold `claude -p` process (~15s) — replaced with one
+  `curl https://new.botbus.ai/`; (2) each builder ended with a blocking
+  `next(timeout=10)` loop run 3–4×, so the second-mover burned 30–40s waiting. Fixed
+  by having be **announce its port before building** (so replay makes it instantly
+  visible) and tightening both agents to a single `next` that stops the moment the
+  peer message lands. ~3 min → ~60s.
 
 ## What to drive next (toward "consistently <1 min, Haiku, green")
 

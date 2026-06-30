@@ -50,7 +50,7 @@ RUN_DIR="$(mktemp -d /tmp/botbus-run.XXXXXX)"
 # port match real evidence of coordination rather than a shared hardcoded default.
 BE_PORT=$(( 20000 + (RANDOM % 20000) ))
 
-cleanup() { kill "${SSE_BG:-}" 2>/dev/null; pkill -f "node ${WORK_DIR}/be/server.js" 2>/dev/null; rm -f "$MCP_CONF"; }
+cleanup() { [ -n "${RUN_DIR:-}" ] && touch "$RUN_DIR/.stop_sse" 2>/dev/null; kill "${SSE_BG:-}" 2>/dev/null; pkill -f "node ${WORK_DIR}/be/server.js" 2>/dev/null; rm -f "$MCP_CONF"; }
 trap cleanup EXIT
 
 echo '{"mcpServers":{"botbus":{"type":"http","url":"https://mcp.botbus.ai/mcp"}}}' > "$MCP_CONF"
@@ -60,7 +60,6 @@ echo '{"mcpServers":{"botbus":{"type":"http","url":"https://mcp.botbus.ai/mcp"}}
 # harness itself (this script) does all verification.
 BOTBUS_TOOLS="mcp__botbus__set_name mcp__botbus__subscribe mcp__botbus__send mcp__botbus__next mcp__botbus__new_channel"
 BUILDER_TOOLS="ToolSearch Write $BOTBUS_TOOLS"
-MINT_TOOLS="ToolSearch $BOTBUS_TOOLS"
 
 run_agent() { # name  allowedTools  prompt  [cwd]  -> writes $RUN_DIR/<name>.json
   # Run each agent FROM its target directory: agents don't reliably honor an
@@ -82,11 +81,15 @@ result_text() { # extract .result from a claude -p json envelope
 echo "=== botbus blackbox E2E — model=$MODEL ==="
 rm -rf "$WORK_DIR"; mkdir -p "$WORK_DIR/fe" "$WORK_DIR/be"
 
-# ── Mint a fresh channel (its own one-shot process) ──────────────────────────
-run_agent mint "$MINT_TOOLS" \
-  "Call ToolSearch query 'select:mcp__botbus__new_channel'. Then call mcp__botbus__new_channel with no parameters. Print ONLY the channel_id value from the response, nothing else."
-CH="$(result_text mint | grep -oE '[a-z0-9]{20,}' | head -1)"
-if [ -z "$CH" ]; then echo "FATAL: could not mint channel"; cat "$RUN_DIR/mint.json"; exit 1; fi
+# ── Mint a fresh channel (one HTTP call, ~100ms) ─────────────────────────────
+# Minting used to be a whole cold `claude -p` process just to call new_channel —
+# ~15s of pure overhead. new.botbus.ai mints a channel over plain HTTP and returns
+# its URL; we use the SAME id for the SSE tail (https://<id>.botbus.ai/) and for the
+# builders' MCP subscribe(channel=<id>), so observer and builders are provably on
+# one channel (the earlier empty transcript was an MCP-vs-HTTP channel mismatch).
+CH_URL="$(curl -s -m 10 https://new.botbus.ai/ | tr -d '[:space:]')"
+CH="$(printf '%s' "$CH_URL" | sed -E 's#^https?://([^./]+)\..*#\1#')"
+if [ -z "$CH" ]; then echo "FATAL: could not mint channel (got: '$CH_URL')"; exit 1; fi
 echo "Channel: $CH"
 
 # ── Prompts ──────────────────────────────────────────────────────────────────
@@ -98,18 +101,20 @@ echo "Channel: $CH"
 
 read -r -d '' BE_PROMPT <<EOF
 You are be-builder, joining a botbus channel to build a backend with a peer (fe-builder) live.
+SPEED MATTERS: announce your port FIRST so fe-builder can start; build the file AFTER.
 1. ToolSearch query 'select:mcp__botbus__set_name,mcp__botbus__subscribe,mcp__botbus__send,mcp__botbus__next'.
 2. mcp__botbus__set_name name='be-builder'.
-3. mcp__botbus__subscribe channel='$CH'. (On subscribe you receive recent channel history, so you won't miss anything fe-builder already said.)
-4. Write a file named exactly server.js in your CURRENT working directory (use the bare name server.js,
+3. mcp__botbus__subscribe channel='$CH'. (Subscribe replays recent history — you won't miss anything fe-builder already said.)
+4. Announce IMMEDIATELY (before writing any file): mcp__botbus__send channel='$CH'
+   text='be-ready: base URL http://localhost:$BE_PORT  GET /api/count  POST /api/increment {delta}'
+5. Write a file named exactly server.js in your CURRENT working directory (use the bare name server.js,
    not an absolute path): a Node.js http-module counter server on port $BE_PORT,
    in-memory counter starting at 0, CORS enabled, runnable with exactly 'node server.js' (NO npm install):
      GET  /api/count      -> {"count":N}
      POST /api/increment  body {"delta":N} -> {"count":N}   (delta may be negative)
-5. Announce ONCE: mcp__botbus__send channel='$CH'
-   text='be-ready: base URL http://localhost:$BE_PORT  GET /api/count  POST /api/increment {delta}'
-6. Listen for fe-builder: call mcp__botbus__next channel='$CH' timeout_seconds=10 up to 3 times; record any
-   fe-builder message (history replay means you'll see its fe-ready even if it was sent before you subscribed).
+6. Check for fe-builder's message with a SINGLE mcp__botbus__next channel='$CH' timeout_seconds=8 call
+   (the backlog already holds its fe-ready if it spoke). Call next at most ONCE more only if the first
+   returned nothing. Do NOT keep polling after you've seen a fe-builder message.
 7. Finish: mcp__botbus__send channel='$CH' text='be-done'.
 End your reply with one line exactly: RESULT_JSON:{"subscribed":true|false,"announced":true|false,"peer_heard":true|false,"file_written":true|false}
 EOF
@@ -122,8 +127,10 @@ The backend's base URL is unknown until be-builder announces it on the channel �
 3. mcp__botbus__subscribe channel='$CH'. (On subscribe you receive recent channel history, so be-builder's URL announcement reaches you whether it was sent before or after you subscribed.)
 4. Announce ONCE: mcp__botbus__send channel='$CH'
    text='fe-ready: need GET /api/count and POST /api/increment {delta}. what base URL?'
-5. Listen for the backend URL: call mcp__botbus__next channel='$CH' timeout_seconds=10 in a loop up to 4 times.
-   Look for a be-builder message containing a base URL like http://localhost:PORT; stop as soon as you capture it.
+5. Get the backend URL: call mcp__botbus__next channel='$CH' timeout_seconds=8 — be-builder announces its
+   port FIRST, so its be-ready is almost always already in the backlog and the FIRST next returns it.
+   Look for a be-builder message containing a base URL like http://localhost:PORT and STOP the instant you
+   capture it. Retry next at most 2 more times ONLY if you still have no URL; never poll after you have one.
 6. Write a file named exactly index.html in your CURRENT working directory (bare name, not an absolute
    path): vanilla HTML/CSS/JS counter (starts at 0; buttons +1, -1, Reset).
    Set the JS const API_BASE to the EXACT base URL be-builder announced on the channel.
@@ -144,24 +151,71 @@ EOF
 # transcript is now harness ground truth (curl) rather than a Haiku self-report.
 # `?ids=0` strips the ` [id N]` suffix for clean display; the awk reassembles
 # multi-line `data:` frames and dispatches on the blank line.
+#
+# The tail RECONNECTS forever (resuming via Last-Event-ID) until a stop flag is set.
+# This matters: through the agent proxy, an idle SSE connection can be dropped during
+# the seconds of silence before the first agent speaks. A single long curl would die
+# there and miss everything (that was the empty-transcript bug). On reconnect, botbus
+# replays only frames after the saved id, so no message is lost and none duplicated.
 TRANSCRIPT="$RUN_DIR/transcript.txt"
-: > "$TRANSCRIPT"
-sse_tail() {
-  curl -sN --max-time 180 -H "Accept: text/event-stream" "https://$CH.botbus.ai/?ids=0" 2>/dev/null \
-  | awk '
-      /^data:/ { v=$0; sub(/^data: ?/,"",v); m=(n++ ? m "\n" v : v); next }
-      /^$/     { if (n) { print m; fflush() } n=0; m="" }
-    '
+STOP_SSE="$RUN_DIR/.stop_sse"; LASTID="$RUN_DIR/.lastid"
+: > "$TRANSCRIPT"; rm -f "$STOP_SSE" "$LASTID"
+
+# Reconnecting RAW SSE reader. Two full curl invocations (no array expansion) so it
+# also works under macOS bash 3.2 + set -u. On reconnect it resumes via Last-Event-ID
+# so botbus replays only frames after the last one seen — nothing lost or duplicated.
+sse_raw() {
+  local url="https://$CH.botbus.ai/?ids=0" lid
+  while [ ! -f "$STOP_SSE" ]; do
+    lid="$(cat "$LASTID" 2>/dev/null)"
+    if [ -n "$lid" ]; then
+      curl -sN --max-time 120 -H "Accept: text/event-stream" -H "Last-Event-ID: $lid" "$url" 2>/dev/null
+    else
+      curl -sN --max-time 120 -H "Accept: text/event-stream" "$url" 2>/dev/null
+    fi
+  done
+}
+
+# Parse SSE in BASH, not awk: mawk (the default awk on many Linux boxes) buffers its
+# stdout to a pipe and only flushes at EOF, so an awk killed mid-stream loses every
+# message — which both emptied the transcript and defeated live streaming. bash `read`
+# hands us each line the instant it arrives; we write it immediately, so messages
+# stream live AND are already on disk before the tail is stopped. Reassembles a
+# multi-line SSE event (accumulate `data:` lines, dispatch on the blank line).
+stream_sse() {
+  local line part msg="" have=0 curid="" seen=" "
+  while IFS= read -r line; do
+    if [ -n "$line" ]; then
+      case "$line" in
+        id:*)   curid="${line#id:}"; curid="${curid# }"; printf '%s' "$curid" > "$LASTID" ;;
+        data:*) part="${line#data:}"; part="${part# }"
+                if [ "$have" = 1 ]; then msg="$msg
+$part"; else msg="$part"; fi; have=1 ;;
+      esac
+    else
+      # Dispatch on the blank line. Dedupe by event id: on a max-time reconnect,
+      # botbus replays already-seen frames (its SSE id is a content hash, not the
+      # resume cursor, so the Last-Event-ID gap-fill isn't exact). Skipping ids we
+      # have already emitted keeps the transcript clean without dropping live msgs.
+      if [ "$have" = 1 ]; then
+        case "$seen" in
+          *" $curid "*) : ;;                       # duplicate (only when curid is known) — skip
+          *) [ -n "$curid" ] && seen="$seen$curid "
+             printf '  💬 %s\n' "$msg"; printf '%s\n' "$msg" >> "$TRANSCRIPT" ;;
+        esac
+      fi
+      msg=""; have=0; curid=""
+    fi
+  done
 }
 
 # ── Launch ───────────────────────────────────────────────────────────────────
-# Start the live tail first (replay on subscribe means it still catches anything
-# said in the ~1s before it connects), then the two builders concurrently. Each
-# channel message prints as "  💬 <name>: <body>" the moment it lands.
+# Start the live tail, then the two builders concurrently. No warmup sleep: SSE
+# replay on connect backfills anything said in the moment before the tail attaches,
+# so a beat-late tail loses nothing. Each message prints "  💬 <name>: <body>" live.
 echo "Streaming channel live (observer = curl SSE tail)…"
-sse_tail | while IFS= read -r line; do printf '  💬 %s\n' "$line"; echo "$line" >> "$TRANSCRIPT"; done &
+sse_raw | stream_sse &
 SSE_BG=$!
-sleep 1
 echo "Launching be-builder + fe-builder concurrently…"
 run_agent be "$BUILDER_TOOLS" "$BE_PROMPT" "$WORK_DIR/be" &
 BE_BG=$!
@@ -169,9 +223,15 @@ run_agent fe "$BUILDER_TOOLS" "$FE_PROMPT" "$WORK_DIR/fe" &
 FE_BG=$!
 
 wait $BE_BG $FE_BG
-echo "Builders done; draining final channel messages…"
-sleep 2                       # let fe-done/be-done land on the stream
-kill "$SSE_BG" 2>/dev/null; wait "$SSE_BG" 2>/dev/null
+# Both builder processes have exited, so be-done/fe-done are already SENT; we only
+# wait for the SSE tail to DELIVER them — typically sub-second. Poll the transcript
+# instead of a blind sleep, and stop the instant both land (cap 3s as a safety net).
+echo "Builders done; flushing final channel messages…"
+for _ in $(seq 30); do
+  grep -q 'be-done' "$TRANSCRIPT" 2>/dev/null && grep -q 'fe-done' "$TRANSCRIPT" 2>/dev/null && break
+  sleep 0.1
+done
+touch "$STOP_SSE"; kill "$SSE_BG" 2>/dev/null; wait "$SSE_BG" 2>/dev/null
 
 # ── Extract structured results ───────────────────────────────────────────────
 # Parse the first balanced JSON object after the RESULT_JSON: marker (robust to
@@ -221,11 +281,15 @@ free_port() { # cross-platform (macOS + Linux): kill whatever holds TCP port $1
 }
 if [ -f "$WORK_DIR/be/server.js" ]; then
   pkill -f "node.*/be/server.js" 2>/dev/null; free_port "$BE_PORT"
-  sleep 1
   ( cd "$WORK_DIR/be" && nohup node server.js >/dev/null 2>&1 & ) >/dev/null 2>&1
-  sleep 2
-  C0="$(curl -s -m 3 http://localhost:$BE_PORT/api/count 2>/dev/null)"
-  N0="$(num "$C0")"
+  # Poll GET /api/count until the server answers instead of a blind sleep — node
+  # binds in well under a second; stop the moment it responds (cap ~3s).
+  C0=""; N0=""
+  for _ in $(seq 30); do
+    C0="$(curl -s -m 1 http://localhost:$BE_PORT/api/count 2>/dev/null)"
+    N0="$(num "$C0")"; [ -n "$N0" ] && break
+    sleep 0.1
+  done
   if [ -n "$N0" ]; then BE_BOOTS=true; GET_OK=true; fi
   C1="$(curl -s -m 3 -X POST http://localhost:$BE_PORT/api/increment -H 'Content-Type: application/json' -d '{"delta":5}' 2>/dev/null)"
   N1="$(num "$C1")"
