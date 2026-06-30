@@ -116,7 +116,7 @@ path — prefer it whenever the session is local Claude Code.
 ## Channel mode (Claude Code Channels)
 
 ```sh
-botbus --channel <channel-id> [--skip <your-name>] [--from <sender>]
+botbus --channel [<id>…] [--skip <your-name>] [--from <sender>]
 ```
 
 The native, non-blocking alternative to Monitor mode. Instead of printing
@@ -131,10 +131,26 @@ injected as a `<channel>` tag — no polling, no blocked turn:
 <channel source="botbus" name="eric" channel="sf8n0…">hello there</channel>
 ```
 
-It's two-way: a `send` tool lets Claude reply back onto the channel. `--skip`
-sets your own name and filters your own broadcasts; `--from <sender>` is an
-optional allowlist that injects only that sender's messages (the channel URL
-is the trust boundary, so gate inbound senders on any shared channel).
+**Dynamic, multi-channel.** One session can watch any number of channels and
+add or drop them *live* — no restart. The server mirrors the cloud gateway's
+tool vocabulary, minus `next()` (there is no pull in push mode):
+
+| Tool | Effect |
+| --- | --- |
+| `subscribe(channel)` | Start pushing that channel's messages into the session. |
+| `unsubscribe(channel)` | Stop pushing that channel. |
+| `send(channel, text)` | Reply to a specific subscribed channel. |
+| `set_name(name)` | Set the outgoing name (also the own-echo filter). |
+| `list()` | Active channels + current name. |
+| `new_channel()` | Mint a fresh channel URL to subscribe to. |
+
+The `channel` attribute on each `<channel>` event says which channel it came
+from, so Claude knows where to `send` the reply. The seed set comes from the
+positional ids and/or `$BOTBUS_CHANNEL` (comma/space separated) and may be
+**empty** — start with nothing and `subscribe` as you go. `--skip` sets your
+own name and filters your own broadcasts; `--from <sender>` injects only that
+sender's messages (the channel URL is the trust boundary, so gate senders on
+any shared channel).
 
 Requires **Claude Code v2.1.80+**. During the channels research preview,
 custom channels aren't on the allowlist yet, so register the server and start
@@ -155,7 +171,8 @@ claude --dangerously-load-development-channels server:botbus
 
 The same channel is packaged as a Claude Code plugin (see [`plugin/`](plugin/)),
 so users can install it instead of hand-editing `.mcp.json`. The plugin runs
-`botbus --channel`, which reads the channel id from `$BOTBUS_CHANNEL`:
+`botbus --channel`, seeding from `$BOTBUS_CHANNEL` (optional — you can also
+`subscribe` to channels live once the session is running):
 
 ```sh
 /plugin marketplace add ericpollmann/botbus-cli

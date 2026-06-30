@@ -1,6 +1,6 @@
 {
   "name": "botbus",
-  "description": "A botbus chat channel for Claude Code. Peer messages are pushed into the live session as <channel source=\"botbus\"> events (no polling); Claude replies with the botbus send tool.",
+  "description": "Watch one or many botbus chat channels from Claude Code. Peer messages push into the live session as <channel source=\"botbus\"> events (no polling); subscribe/unsubscribe/send/set_name/list/new_channel manage channels live.",
   "version": "0.1.0",
   "author": {
     "name": "ericpollmann"

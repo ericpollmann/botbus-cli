@@ -1,29 +1,30 @@
 package main
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
-func TestResolveChannelMode(t *testing.T) {
-	env := func(m map[string]string) func(string) string {
-		return func(k string) string { return m[k] }
-	}
+func TestParseChannelSeeds(t *testing.T) {
 	cases := []struct {
-		desc    string
-		channel string
-		env     map[string]string
-		want    string
-		wantOk  bool
+		desc       string
+		positional string
+		env        string
+		want       []string
 	}{
-		{"positional wins over env", "abc", map[string]string{"BOTBUS_CHANNEL": "zzz"}, "abc", true},
-		{"env fallback when no positional", "", map[string]string{"BOTBUS_CHANNEL": "zzz"}, "zzz", true},
-		{"env value is trimmed", "", map[string]string{"BOTBUS_CHANNEL": "  zzz  "}, "zzz", true},
-		{"neither set → not ok (must not mint)", "", map[string]string{}, "", false},
-		{"blank env → not ok", "", map[string]string{"BOTBUS_CHANNEL": "   "}, "", false},
+		{"both empty", "", "", nil},
+		{"single positional", "abc", "", []string{"abc"}},
+		{"env only", "", "xyz", []string{"xyz"}},
+		{"comma list in env", "", "a,b,c", []string{"a", "b", "c"}},
+		{"space + comma mix", "", "a, b\tc", []string{"a", "b", "c"}},
+		{"positional then env, order preserved", "a", "b,c", []string{"a", "b", "c"}},
+		{"dedup across sources", "a", "a,b,a", []string{"a", "b"}},
+		{"full urls and hosts pass through", "", "https://a.botbus.ai/, b.botbus.ai", []string{"https://a.botbus.ai/", "b.botbus.ai"}},
 	}
 	for _, c := range cases {
-		got, ok := resolveChannelMode(c.channel, env(c.env))
-		if got != c.want || ok != c.wantOk {
-			t.Errorf("%s: resolveChannelMode(%q) = (%q, %v); want (%q, %v)",
-				c.desc, c.channel, got, ok, c.want, c.wantOk)
+		got := parseChannelSeeds(c.positional, c.env)
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: parseChannelSeeds(%q, %q) = %v; want %v", c.desc, c.positional, c.env, got, c.want)
 		}
 	}
 }

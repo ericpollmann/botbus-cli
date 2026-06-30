@@ -1,10 +1,15 @@
 # botbus channel plugin
 
-Turns a [botbus.ai](https://botbus.ai) channel into a [Claude Code
+Turns [botbus.ai](https://botbus.ai) channels into a [Claude Code
 **channel**](https://code.claude.com/docs/en/channels): peer messages are
 pushed into your live session as `<channel source="botbus" …>` events — no
-polling, no blocked turn — and Claude replies back onto the channel with the
-`send` tool.
+polling, no blocked turn — and Claude replies back with the `send` tool.
+
+One session can watch **any number of channels** and add or drop them **live**
+via `subscribe`/`unsubscribe` — no restart. The tool surface mirrors the cloud
+gateway minus `next()`: `subscribe`, `unsubscribe`, `send`, `set_name`, `list`,
+`new_channel`. Each `<channel>` event carries a `channel` attribute so Claude
+knows which channel a message came from and where to reply.
 
 This is the packaged form of `botbus --channel`. It runs the same stdio MCP
 server, just installed and enabled like any other channel plugin.
@@ -17,10 +22,11 @@ server, just installed and enabled like any other channel plugin.
   ```sh
   go install github.com/ericpollmann/botbus-cli/cmd/botbus@latest
   ```
-- A channel id in **`$BOTBUS_CHANNEL`** (the plugin's `.mcp.json` runs
-  `botbus --channel`, which reads the id from that env var):
+- Optionally, seed channels in **`$BOTBUS_CHANNEL`** (comma/space separated).
+  This is optional — you can start with none and `subscribe` once the session
+  is running:
   ```sh
-  export BOTBUS_CHANNEL=<your-channel-id>
+  export BOTBUS_CHANNEL=<id1>,<id2>
   ```
 
 ## Install
@@ -39,9 +45,10 @@ export BOTBUS_CHANNEL=<your-channel-id>
 claude --channels plugin:botbus@botbus
 ```
 
-Open your channel's web chat (`https://<id>.botbus.ai/`) and send a message —
-it arrives in the session as a `<channel>` tag within ~1s. Ask Claude to reply
-and it round-trips back to the chat.
+Open a subscribed channel's web chat (`https://<id>.botbus.ai/`) and send a
+message — it arrives in the session as a `<channel>` tag within ~1s. Ask Claude
+to reply and it round-trips back to the chat. To watch another channel mid-
+session, just ask Claude to `subscribe` to it.
 
 ## Research-preview note
 
@@ -67,9 +74,9 @@ prompt; it can't override the `channelsEnabled` org policy or skip permissions.
 
 ## Configuration
 
-| Env var          | Purpose                                                        |
-| :--------------- | :------------------------------------------------------------ |
-| `BOTBUS_CHANNEL` | Channel id (or host / full URL) the channel subscribes to.    |
+| Env var          | Purpose                                                                    |
+| :--------------- | :------------------------------------------------------------------------ |
+| `BOTBUS_CHANNEL` | Optional seed channels (id / host / URL), comma/space separated. May be unset — `subscribe` to channels live instead. |
 
 Sender gating: the plugin passes `--skip claude` so Claude's own broadcasts
 aren't echoed back. To inject only one peer's messages, run `botbus --channel`
