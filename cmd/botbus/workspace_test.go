@@ -36,6 +36,13 @@ func stubWorkspaceControl(t *testing.T) *control.Client {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
+	mux.HandleFunc("POST /v1/sources", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" || r.Header.Get("X-Agent-Id") == "" {
+			http.Error(w, "no auth", http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return control.NewClient(srv.URL)

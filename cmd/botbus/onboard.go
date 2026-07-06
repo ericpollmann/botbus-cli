@@ -86,12 +86,35 @@ func ensureWorkspaceRoot(ctx context.Context, d hostagent.Deps, profilePath, wsN
 	if p == nil {
 		p = &profile.Profile{}
 	}
+
+	// Mint (once) the workspace source channel and bind it to the root so the
+	// router routes messages arriving on it only within this workspace. Reuse the
+	// existing source when re-onboarding the SAME root, so a re-run doesn't mint a
+	// fresh channel; AddSource is idempotent for the same root+channel regardless.
+	// Bind BEFORE persisting so a failed bind never leaves a persisted-but-unbound
+	// source.
+	source := p.Root.Source
+	if p.Root.ID != root.ID || source == "" {
+		source, err = d.Hub.MintChannel(ctx)
+		if err != nil {
+			return agentstate.Agent{}, err
+		}
+	}
+	if err := d.Control.AddSource(ctx, root.ID, root.Key, source); err != nil {
+		return agentstate.Agent{}, err
+	}
+
 	p.User = user
-	p.Root = profile.Root{ID: root.ID, InboxChannel: root.InboxChannel, Key: root.Key}
+	p.Root = profile.Root{ID: root.ID, InboxChannel: root.InboxChannel, Key: root.Key, Source: source}
 	if err := profile.Save(profilePath, p); err != nil {
 		return agentstate.Agent{}, err
 	}
 	if err := setActiveWorkspace(d.StatePath, root.ID); err != nil {
+		return agentstate.Agent{}, err
+	}
+	// Point the daemon's outbound channel at the workspace source so every agent's
+	// `send` publishes there (the router anchors that channel to this workspace).
+	if err := setOutboundChannel(d.StatePath, source); err != nil {
 		return agentstate.Agent{}, err
 	}
 	return root, nil

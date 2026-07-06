@@ -147,6 +147,18 @@ func setActiveWorkspace(statePath, orgRootID string) error {
 	return agentstate.Save(statePath, s)
 }
 
+// setOutboundChannel records the workspace source channel every locally-managed
+// agent's `send` publishes to (daemon.OutboundChannel). Set at workspace-root
+// creation to the workspace's bound source, activating firewalled routing.
+func setOutboundChannel(statePath, channel string) error {
+	s, err := agentstate.Load(statePath)
+	if err != nil {
+		return err
+	}
+	s.Daemon.OutboundChannel = channel
+	return agentstate.Save(statePath, s)
+}
+
 // workspaceUse switches the active workspace to the workspace named name,
 // resolving it to its org-root agent id. It errors clearly (and changes
 // nothing) if no such workspace exists locally.

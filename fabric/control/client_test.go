@@ -135,3 +135,48 @@ func TestClientDeregisterErrorStatus(t *testing.T) {
 		t.Fatal("expected error on 401, got nil")
 	}
 }
+
+// AddSource POSTs /v1/sources with the root's X-Agent-Id + Bearer key and a
+// {"channel":...} body, treating 204 as success.
+func TestClientAddSource(t *testing.T) {
+	var gotMethod, gotPath, gotID, gotAuth string
+	var gotBody struct {
+		Channel string `json:"channel"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		gotID = r.Header.Get("X-Agent-Id")
+		gotAuth = r.Header.Get("Authorization")
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		if gotAuth != "Bearer key-root" || gotID == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	if err := NewClient(srv.URL).AddSource(context.Background(), "root-id", "key-root", "src-chan"); err != nil {
+		t.Fatalf("AddSource: %v", err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/v1/sources" {
+		t.Fatalf("request = %s %s, want POST /v1/sources", gotMethod, gotPath)
+	}
+	if gotID != "root-id" || gotAuth != "Bearer key-root" {
+		t.Fatalf("auth headers = id %q auth %q, want root-id / Bearer key-root", gotID, gotAuth)
+	}
+	if gotBody.Channel != "src-chan" {
+		t.Fatalf("body channel = %q, want src-chan", gotBody.Channel)
+	}
+}
+
+// A 409 (channel already bound to another workspace) is surfaced as an error.
+func TestClientAddSourceConflict(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "source channel already bound to another workspace", http.StatusConflict)
+	}))
+	defer srv.Close()
+	if err := NewClient(srv.URL).AddSource(context.Background(), "root-id", "key-root", "taken"); err == nil {
+		t.Fatal("expected error on 409, got nil")
+	}
+}
