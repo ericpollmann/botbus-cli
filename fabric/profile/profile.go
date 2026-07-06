@@ -13,6 +13,7 @@ type Root struct {
 	ID           string `json:"id"`
 	InboxChannel string `json:"inbox_channel"`
 	Key          string `json:"key"`
+	Source       string `json:"source,omitempty"` // per-workspace source channel `send` publishes to
 }
 
 type Profile struct {

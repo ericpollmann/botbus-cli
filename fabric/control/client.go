@@ -123,6 +123,28 @@ func (c *Client) Roster(ctx context.Context, id, key string) ([]wire.AgentNode, 
 	return nodes, nil
 }
 
+// AddSource binds a source channel to the workspace root (id) via
+// POST /v1/sources, so the router routes messages arriving on that channel only
+// within the root's workspace. Authenticated as the root (X-Agent-Id + capability
+// key), like Roster. Idempotent for the same root+channel (204); a 409 means the
+// channel is already bound to a different workspace and is surfaced as an error.
+func (c *Client) AddSource(ctx context.Context, id, key, channel string) error {
+	body, err := json.Marshal(struct {
+		Channel string `json:"channel"`
+	}{Channel: channel})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/v1/sources", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Agent-Id", id)
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	return c.do(req, http.StatusNoContent)
+}
+
 func (c *Client) do(req *http.Request, want int) error {
 	resp, err := c.hc.Do(req)
 	if err != nil {
