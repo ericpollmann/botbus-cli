@@ -143,3 +143,55 @@ func TestNextCounterSurvivesRestart(t *testing.T) {
 		t.Fatalf("post-restart counter %d was rejected by the peer's replay window — messages would be silently dropped", counter)
 	}
 }
+
+// TestNextCounterSeedBelowHighWaterMarkIsRejected documents the residual risk
+// that nextCounterSeed's doc comment (e2ectx.go) calls out explicitly: the
+// wall-clock seed is virtually certain, not guaranteed, to exceed a peer's
+// prior high-water mark. If the sender's clock has stepped backward across
+// the restart (NTP correction, VM suspend/resume, container/pod rescheduled
+// onto a skewed host), the freshly-seeded counter can still land at or below
+// what the peer already recorded, and the exact bug nextCounterSeed exists to
+// fix reappears — just gated by clock skew instead of deterministic.
+//
+// This test does not assert that the mechanism is resilient to that case
+// (it isn't); it pins down the known, accepted failure so it is explicit and
+// reviewable rather than silently assumed away, and so any future change to
+// nextCounter's contract has to consciously touch this test.
+func TestNextCounterSeedBelowHighWaterMarkIsRejected(t *testing.T) {
+	// Simulate the pre-restart world: the receiver's replay window has
+	// already accepted a run of messages up to counter 500 on this triple.
+	rk := replayKey{device: "leaf", channel: "root", epoch: 1}
+	w := newReplayWindow()
+	if !w.accept(rk, 500) {
+		t.Fatal("setup: replay window must accept the pre-restart high-water mark")
+	}
+
+	// Simulate the sender daemon restarting with a skewed clock: instead of
+	// the real wall-clock time (which trivially exceeds 500), the seed lands
+	// well below the peer's high-water mark — e.g. an NTP step correction or
+	// a migration onto a host with a clock set to an earlier time.
+	defer stubNextCounterSeed(100)()
+
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	st := &agentstate.State{Agents: []agentstate.Agent{{ID: "root"}, {ID: "leaf", Parent: "root"}}}
+	d := &Daemon{state: st, trust: newTrustGraph(), replay: newReplayWindow()}
+	ctx := &e2eCtx{channelID: "root", deviceID: "leaf", epoch: 1, devPriv: priv}
+
+	counter, err := ctx.nextCounter(d)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if counter != 100 {
+		t.Fatalf("expected the stubbed low seed 100 to be used verbatim, got %d", counter)
+	}
+
+	// This is the known, accepted residual failure: the peer's replay window
+	// rejects the post-restart counter because the skewed seed never climbed
+	// back above the old high-water mark. If this ever starts passing (i.e.
+	// w.accept starts returning true here) without an intentional change to
+	// nextCounter's seeding strategy, something else has changed and this
+	// test's premise needs re-examining.
+	if w.accept(rk, counter) {
+		t.Fatalf("expected counter %d (below the peer's high-water mark 500) to be rejected; if it now succeeds, the seeding strategy changed and this test should be revisited", counter)
+	}
+}
