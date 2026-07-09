@@ -47,7 +47,19 @@ func TestKeyArrayRejectsWrongLen(t *testing.T) {
 	}
 }
 
-func TestNextCounterMonotonicFromOne(t *testing.T) {
+// stubNextCounterSeed replaces the package-level seed hook with one that
+// always returns v, and returns a func that restores the original. Tests use
+// this to get deterministic seed values instead of the real wall-clock
+// nanosecond seed.
+func stubNextCounterSeed(v uint64) (restore func()) {
+	orig := nextCounterSeed
+	nextCounterSeed = func() uint64 { return v }
+	return func() { nextCounterSeed = orig }
+}
+
+func TestNextCounterMonotonicFromSeed(t *testing.T) {
+	defer stubNextCounterSeed(1000)()
+
 	st := &agentstate.State{Agents: []agentstate.Agent{{ID: "root", Parent: ""}, {ID: "leaf", Parent: "root"}}}
 	d := &Daemon{state: st, trust: newTrustGraph(), replay: newReplayWindow()}
 
@@ -56,13 +68,13 @@ func TestNextCounterMonotonicFromOne(t *testing.T) {
 	rand.Read(key)
 	ctx := &e2eCtx{channelID: "root", deviceID: "leaf", epoch: 1, devPriv: priv}
 
-	// First call must return 1.
+	// First call for a brand-new key must return the seed, not 1.
 	c1, err := ctx.nextCounter(d)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if c1 != 1 {
-		t.Fatalf("first counter must be 1, got %d", c1)
+	if c1 != 1000 {
+		t.Fatalf("first counter must equal the seed (1000), got %d", c1)
 	}
 
 	// Subsequent calls strictly increase.
@@ -82,13 +94,52 @@ func TestNextCounterMonotonicFromOne(t *testing.T) {
 		t.Fatalf("counter must strictly increase: c2=%d c3=%d", c2, c3)
 	}
 
-	// Different key is independent (starts at 1).
+	// Different key is independent and gets its own seed.
 	ctx2 := &e2eCtx{channelID: "root", deviceID: "other-leaf", epoch: 1, devPriv: priv}
 	c4, err := ctx2.nextCounter(d)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if c4 != 1 {
-		t.Fatalf("different key must start at 1, got %d", c4)
+	if c4 != 1000 {
+		t.Fatalf("different key must start at its own seed (1000), got %d", c4)
+	}
+}
+
+// TestNextCounterSurvivesRestart is the regression test for the fix: after a
+// simulated daemon restart (a brand-new Daemon with a nil in-memory counters
+// map — exactly the state a process restart leaves behind), the sender's
+// first counter for a (device,channel,epoch) triple that a peer has already
+// seen messages for must still be accepted by that peer's replay window.
+// Before the fix, nextCounter always restarted at 1, which a replay window
+// that had already seen a higher counter would reject forever — a durable,
+// silent, one-directional message drop until the counter climbed back past
+// the old high-water mark or the workspace key rotated.
+func TestNextCounterSurvivesRestart(t *testing.T) {
+	// Simulate the pre-restart world: the receiver's replay window has
+	// already accepted a run of messages up to counter 500 on this triple.
+	rk := replayKey{device: "leaf", channel: "root", epoch: 1}
+	w := newReplayWindow()
+	if !w.accept(rk, 500) {
+		t.Fatal("setup: replay window must accept the pre-restart high-water mark")
+	}
+
+	// Simulate the sender daemon restarting: a fresh Daemon with a nil
+	// counters map, so nextCounter must treat this key as brand new.
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	st := &agentstate.State{Agents: []agentstate.Agent{{ID: "root"}, {ID: "leaf", Parent: "root"}}}
+	d := &Daemon{state: st, trust: newTrustGraph(), replay: newReplayWindow()}
+	ctx := &e2eCtx{channelID: "root", deviceID: "leaf", epoch: 1, devPriv: priv}
+
+	counter, err := ctx.nextCounter(d)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if counter <= 500 {
+		t.Fatalf("post-restart counter %d must exceed the pre-restart high-water mark 500 (this is exactly the bug being fixed)", counter)
+	}
+
+	// The peer's (unchanged, still-running) replay window must accept it.
+	if !w.accept(rk, counter) {
+		t.Fatalf("post-restart counter %d was rejected by the peer's replay window — messages would be silently dropped", counter)
 	}
 }
