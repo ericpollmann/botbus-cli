@@ -59,6 +59,18 @@ func (d *Daemon) openerFor(agentID string) opener {
 			return envelope.Envelope{}, false
 		}
 		if !d.replay.accept(replayKey{device: dev, channel: ec.channelID, epoch: env.KeyEpoch}, counter) {
+			// Rejection here is normally a genuine duplicate/out-of-order
+			// frame, but it is also the exact symptom of the residual
+			// clock-skew failure mode documented on nextCounterSeed
+			// (e2ectx.go): if a peer's wall clock stepped backward across
+			// a restart (NTP correction, VM suspend/resume, a container
+			// or pod rescheduled onto a skewed host), its restart-seeded
+			// counter can land at or below our high-water mark and every
+			// one of its messages will be dropped here until it climbs
+			// back past it. Log so a recurrence is observable rather than
+			// silent — the original bug this replaced was defined by
+			// being undetectable.
+			log.Printf("daemon: dropped e2e frame from device=%s channel=%s epoch=%d: counter %d not fresh (duplicate/out-of-order, or sender clock skew after a restart)", dev, ec.channelID, env.KeyEpoch, counter)
 			return envelope.Envelope{}, false
 		}
 		subj, body, cerr := decodeContent(content)
